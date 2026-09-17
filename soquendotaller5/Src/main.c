@@ -17,9 +17,18 @@
  */
 
 #include <stdint.h>
+#include <sys/types.h>
+
+uint8_t x= 0;
+
 
 int main(void)
 {
     /* Loop forever */
-	for(;;);
+	while (1)
+    {
+        x=x+1;
+    }
+    
+    return 0;
 }
