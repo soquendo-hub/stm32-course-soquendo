@@ -40,6 +40,7 @@ int main(void)
     uint8_t right1 = val >> 1;      /*toma el valor 1*/
     /*el desplazamiento a la izquierda es como multiplicar
     por 2 y a la derecha es dividir entre 2*/
+    /*cuando se desplaza un bit fuera del extremo de la variable hay desbordamiento y se va a cero*/
     
     /*Ejercicio 1.4 - Evaluacion booleana e if/else */
     uint8_t v_false = 0;
