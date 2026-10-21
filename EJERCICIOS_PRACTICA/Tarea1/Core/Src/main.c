@@ -197,24 +197,12 @@ void init_GPIO(void){
 
     //GPIOx_PUPDR 00: No pull-up, pull-down
 
-    /*
-    *   5. GPIOx_ODR
-    */
-    GPIOA->ODR |= (GPIO_ODR_OD11 | GPIO_ODR_OD12);
-    GPIOB->ODR |= (GPIO_ODR_OD7  | GPIO_ODR_OD12);
-    GPIOC->ODR |= (GPIO_ODR_OD3  | GPIO_ODR_OD5  | GPIO_ODR_OD6  |
-                   GPIO_ODR_OD10 | GPIO_ODR_OD11 | GPIO_ODR_OD12);
-    GPIOD->ODR |= (GPIO_ODR_OD2);
-
-    /*
-    *   6.GPIOx_BSRR 1: Sets the corresponding ODRx bit
-    */
-    GPIOA->BSRR = (GPIO_BSRR_BS11 | GPIO_BSRR_BS12);
-    GPIOB->BSRR = (GPIO_BSRR_BS12 | GPIO_BSRR_BS7);
-    GPIOC->BSRR = (GPIO_BSRR_BS3  | GPIO_BSRR_BS5  |
-                   GPIO_BSRR_BS6  | GPIO_BSRR_BS10 |
-                   GPIO_BSRR_BS11 | GPIO_BSRR_BS12);
-    GPIOD->BSRR = (GPIO_BSRR_BS2);
+    /* Ánodo común: segmentos apagados en alto; selectores NPN apagados en bajo. */
+    GPIOA->BSRR = GPIO_BSRR_BS11 | GPIO_BSRR_BS12;
+    GPIOB->BSRR = GPIO_BSRR_BR7 | GPIO_BSRR_BS12;
+    GPIOC->BSRR = GPIO_BSRR_BR3 | GPIO_BSRR_BR5 | GPIO_BSRR_BR6 |
+                  GPIO_BSRR_BS10 | GPIO_BSRR_BS11 | GPIO_BSRR_BS12;
+    GPIOD->BSRR = GPIO_BSRR_BS2;
 
 
 }
@@ -268,48 +256,37 @@ void init_EXTI(void){
 // A=PB12, B=PA12, C=PC11, D=PC12, E=PC10, F=PA11, G=PD2.
 void encender_segmentos(uint8_t digito) {
     static const uint8_t patrones[10] = {
-        0x3FU, // 0: A B C D E F
-        0x06U, // 1: B C
-        0x5BU, // 2: A B D E G
-        0x4FU, // 3: A B C D G
-        0x66U, // 4: B C F G
-        0x6DU, // 5: A C D F G
-        0x7DU, // 6: A C D E F G
-        0x07U, // 7: A B C
-        0x7FU, // 8: A B C D E F G
-        0x6FU  // 9: A B C D F G
+        0x3FU, 0x06U, 0x5BU, 0x4FU, 0x66U,
+        0x6DU, 0x7DU, 0x07U, 0x7FU, 0x6FU
     };
-    uint8_t p;
-    uint32_t bits_a = 0;
-    uint32_t bits_b = 0;
-    uint32_t bits_c = 0;
-    uint32_t bits_d = 0;
+    uint8_t patron = (digito < 10U) ? patrones[digito] : 0U;
+    uint32_t puerto_a = 0U;
+    uint32_t puerto_b = 0U;
+    uint32_t puerto_c = 0U;
+    uint32_t puerto_d = 0U;
 
-    if (digito > 9U) {
-        return;
-    }
-    p = patrones[digito];
+    if (patron & (1U << 0)) puerto_b |= GPIO_BSRR_BR12; // A
+    if (patron & (1U << 1)) puerto_a |= GPIO_BSRR_BR12; // B
+    if (patron & (1U << 2)) puerto_c |= GPIO_BSRR_BR11; // C
+    if (patron & (1U << 3)) puerto_c |= GPIO_BSRR_BR12; // D
+    if (patron & (1U << 4)) puerto_c |= GPIO_BSRR_BR10; // E
+    if (patron & (1U << 5)) puerto_a |= GPIO_BSRR_BR11; // F
+    if (patron & (1U << 6)) puerto_d |= GPIO_BSRR_BR2;  // G
 
-    if (p & (1U << 0)) bits_b |= GPIO_ODR_OD12; // A -> PB12
-    if (p & (1U << 1)) bits_a |= GPIO_ODR_OD12; // B -> PA12
-    if (p & (1U << 2)) bits_c |= GPIO_ODR_OD11; // C -> PC11
-    if (p & (1U << 3)) bits_c |= GPIO_ODR_OD12; // D -> PC12
-    if (p & (1U << 4)) bits_c |= GPIO_ODR_OD10; // E -> PC10
-    if (p & (1U << 5)) bits_a |= GPIO_ODR_OD11; // F -> PA11
-    if (p & (1U << 6)) bits_d |= GPIO_ODR_OD2;  // G -> PD2
-
-    GPIOA->BSRR = bits_a << 16;
-    GPIOB->BSRR = bits_b << 16;
-    GPIOC->BSRR = bits_c << 16;
-    GPIOD->BSRR = bits_d << 16;
+    GPIOA->BSRR = puerto_a;
+    GPIOB->BSRR = puerto_b;
+    GPIOC->BSRR = puerto_c;
+    GPIOD->BSRR = puerto_d;
 }
 
-void apagar_todo(void) {
-    /* PNP activos en bajo: apagar los cuatro dígitos. */
-    GPIOB->BSRR = GPIO_BSRR_BS7;                 // DISP4
-    GPIOC->BSRR = GPIO_BSRR_BS5 | GPIO_BSRR_BS6 | GPIO_BSRR_BS3; // DISP1-3
+//APAGAR TODOS LOS SEGMENTOS Y LLAMAR ANTES DE DEL SIGUIENTE DIGITO
 
-    /* Ánodo común: poner los cátodos en alto apaga todos los segmentos. */
+void apagar_todo(void) {
+    /* NPN de selección: nivel bajo apaga los cuatro dígitos. */
+    GPIOB->BSRR = GPIO_BSRR_BR7; // DISP4
+    GPIOC->BSRR = GPIO_BSRR_BR5 | GPIO_BSRR_BR6 | GPIO_BSRR_BR3;
+
+    /* Ánodo común: nivel alto apaga todos los segmentos. */
     GPIOA->BSRR = GPIO_BSRR_BS11 | GPIO_BSRR_BS12;
     GPIOB->BSRR = GPIO_BSRR_BS12;
     GPIOC->BSRR = GPIO_BSRR_BS10 | GPIO_BSRR_BS11 | GPIO_BSRR_BS12;
@@ -344,12 +321,12 @@ void actualizar_display(void) {
 
     encender_segmentos(valor_digito);
 
-    /* PNP: base baja activa el dígito seleccionado. */
+    /* NPN: nivel alto en la base activa el dígito seleccionado. */
     switch (digito_actual) {
-        case 0: GPIOB->BSRR = GPIO_BSRR_BR7; break; // DISP4, unidades
-        case 1: GPIOC->BSRR = GPIO_BSRR_BR3; break; // DISP3, decenas
-        case 2: GPIOC->BSRR = GPIO_BSRR_BR6; break; // DISP2, centenas
-        default: GPIOC->BSRR = GPIO_BSRR_BR5; break; // DISP1, millares
+        case 0: GPIOB->BSRR = GPIO_BSRR_BS7; break; // DISP4, unidades
+        case 1: GPIOC->BSRR = GPIO_BSRR_BS3; break; // DISP3, decenas
+        case 2: GPIOC->BSRR = GPIO_BSRR_BS6; break; // DISP2, centenas
+        default: GPIOC->BSRR = GPIO_BSRR_BS5; break; // DISP1, millares
     }
 
     digito_actual = (uint8_t)((digito_actual + 1U) & 0x03U);
