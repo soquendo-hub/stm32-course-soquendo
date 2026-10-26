@@ -21,16 +21,61 @@
 #include "stm32f4xx.h"
 
 /*
- PINES DEL SIETE SEGMENTOS
-
-   Seg A -> PB12       Seg B -> PA12       Seg C -> PC11
-   Seg D -> PC12       Seg E -> PC10       Seg F -> PA11
-   Seg G -> PD2        DISP1 -> PC5        DISP2 -> PC6
-   DISP3 -> PC3        DISP4 -> PB7
-
- FOTOINTERRUPTORES
-   PC2 -> SUMA  (FLANCO DE SUBIDA)
-   PA0 -> RESTA (FLANCO DE BAJADA)
+* HERRAMIENTAS DE HARDWARE UTILIZADAS
+ * -----------------------------------
+ * - GPIO: 
+ *      -pines de salida para los 7 segmentos
+ *      -los 4 selectores de dígito (transistores NPN) y el LED de estado (PH1). 
+ *      -Pines de entrada para los fotointerruptores (PA0 y PC2).
+ * - TIM10: temporizador del LED de estado. Genera una interrupción cada
+ *   500 ms (PSC = 15999, ARR = 499).
+ * - TIM2: temporizador del refresco del display. Genera una interrupción
+ *   cada 4 ms (PSC = 15999, ARR = 3).
+ * - EXTI + SYSCFG: detectan los flancos de los fotointerruptores y generan
+ *   interrupciones externas. SYSCFG conecta PA0 a EXTI0 y PC2 a EXTI2.
+ *          -PC2 (SUMA)  -> flanco de subida
+ *          -PA0 (RESTA) -> flanco de bajada
+ * - NVIC: habilita y atiende las 4 interrupciones del sistema:
+ *   EXTI0, EXTI2, TIM2 y TIM1_UP_TIM10.
+ *
+ * ASIGNACIÓN DE PINES
+ * -------------------
+ *   Segmentos: A=PB12, B=PA12, C=PC11, D=PC12, E=PC10, F=PA11, G=PD2
+ *   Dígitos:   DISP1=PC5 (millares), DISP2=PC6 (centenas),
+ *              DISP3=PC3 (decenas),  DISP4=PB7 (unidades)
+ *   Fotointerruptores: PC2 (SUMA), PA0 (RESTA)
+ *   LED de estado: PH1
+ *
+ * FUNCIONAMIENTO: MÁQUINAS DE ESTADOS
+ * -----------------------------------
+ *
+ * MÁQUINA 1: CONTROL PRINCIPAL (lazo while(1) de main)
+ *
+ *   Estado     Evento / condición            Acción                  Siguiente
+ *   ---------  ----------------------------  ----------------------  ---------
+ *   INICIO     (al energizar)                init_GPIO, init_Timers,  ESPERA
+ *                                            init_EXTI, Blinker
+ *   ESPERA     f_suma  (PC2, flanco subida)  -                        SUMAR
+ *   ESPERA     f_resta (PA0, flanco bajada)  -                        RESTAR
+ *   ESPERA     f_tim2  (TIM2, cada 4 ms)     -                        REFRESCAR
+ *   SUMAR      contador < 9999               contador++               ESPERA
+ *   SUMAR      contador = 9999               no cambia                ESPERA
+ *   RESTAR     contador > 0                  contador--               ESPERA
+ *   RESTAR     contador = 0                  no cambia                ESPERA
+ *   REFRESCAR  -                             actualizar_display()     ESPERA
+ *
+ * MÁQUINA 2: DISPLAY (efecto POV, dentro de actualizar_display)
+ *   En cada evento de TIM2 solo se enciende un dígito y se avanza al siguiente.
+ *   Como la secuencia completa se repite cada 16 ms (62,5 Hz), el ojo percibe
+ *   los cuatro dígitos encendidos a la vez.
+ *
+ *   UNIDADES (DISP4) -> DECENAS (DISP3) -> CENTENAS (DISP2)
+ *        ^                                       |
+ *        +------- MILLARES (DISP1) <-------------+
+ *
+ *   En cada estado se hacen estos pasos: apagar todo (evita fantasmas),
+ *   poner el patrón del dígito en los segmentos (nivel bajo enciende, por
+ *   ser ánodo común) y activar el transistor del dígito (nivel alto).
 */
 
 //VARIABLES VOLÁTILES
@@ -110,7 +155,7 @@ void Blinker(void){
     GPIOH->MODER  |= GPIO_MODER_MODE1_0;    //01: General purpose output mode
     GPIOH->OTYPER &= ~GPIO_OTYPER_OT1;      //Output push-pull
     GPIOH->PUPDR  &= ~GPIO_PUPDR_PUPD1;     //No pull-up, pull-down      
-    GPIOH->BSRR   &= ~GPIO_BSRR_BR1;        //No action on the corresponding ODRx bit
+
     //iniciar timer TIM10
     RCC->APB2ENR |= RCC_APB2ENR_TIM10EN;    //TIM10 clock enabled
     TIM10->DIER  |= TIM_DIER_UIE;           //Update interrupt enabled
@@ -134,9 +179,10 @@ void init_GPIO(void){
     */
 
     /*
-    *   1. ACTIVAR SEÑAL DE RELOJ 
+    *   1. ACTIVAR SEÑAL DE RELOJ: GPIOA, GPIOB, GPIOC & GPIOD
     */
-    RCC->AHB1ENR |= (RCC_AHB1ENR_GPIOAEN | RCC_AHB1ENR_GPIOBEN | RCC_AHB1ENR_GPIOCEN | RCC_AHB1ENR_GPIODEN);
+    RCC->AHB1ENR |= (RCC_AHB1ENR_GPIOAEN | RCC_AHB1ENR_GPIOBEN |
+                     RCC_AHB1ENR_GPIOCEN | RCC_AHB1ENR_GPIODEN);
 
     /*
     *   2. LIMPIAR REGISTROS
@@ -163,7 +209,7 @@ void init_GPIO(void){
     GPIOC->OSPEEDR &= ~(GPIO_OSPEEDER_OSPEEDR3   | GPIO_OSPEEDER_OSPEEDR5  |
                          GPIO_OSPEEDER_OSPEEDR6  | GPIO_OSPEEDER_OSPEEDR10 |
                          GPIO_OSPEEDER_OSPEEDR11 | GPIO_OSPEEDER_OSPEEDR12);
-    GPIOC->PUPDR   &= ~(GPIO_PUPDR_PUPD2   | GPIO_PUPDR_PUPD5  |
+    GPIOC->PUPDR   &= ~(GPIO_PUPDR_PUPD3   | GPIO_PUPDR_PUPD5  |
                          GPIO_PUPDR_PUPD6  | GPIO_PUPDR_PUPD10 |
                          GPIO_PUPDR_PUPD11 | GPIO_PUPDR_PUPD12);
 
@@ -208,16 +254,15 @@ void init_GPIO(void){
 }
 
 void init_Timers(void){
-    RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
+    RCC->APB1ENR &= ~(RCC_APB1ENR_TIM2EN);
+    RCC->APB1ENR |=   RCC_APB1ENR_TIM2EN;
 
-    TIM2->CR1 = 0;
-    TIM2->PSC = 16000 - 1;
-    TIM2->ARR = 4 - 1;
-    TIM2->CNT = 0;
-    TIM2->CR1 |= TIM_CR1_ARPE;
-    TIM2->EGR = TIM_EGR_UG;         // cargar prescaler y ARR
-    TIM2->SR = 0;                   // limpiar UIF generado por UG
-    TIM2->DIER |= TIM_DIER_UIE;
+    
+    TIM2->PSC = 16000 - 1;          // 16MHHz/16000=1kHz -> un tick cada un milisegundo
+    TIM2->ARR = 4 - 1;              // Interrupción cada 4ms
+    TIM2->CNT = 0;                  // Contador inicia en cero
+    TIM2->CR1 |= TIM_CR1_ARPE;      // 1: TIMx_ARR register is buffered (PRECARGA)
+    TIM2->DIER |= TIM_DIER_UIE;     // 1: Update interrupt enabled
 
     __NVIC_EnableIRQ(TIM2_IRQn);
     TIM2->CR1 |= TIM_CR1_CEN;
@@ -234,7 +279,7 @@ void init_EXTI(void){
 
     //MAPERA PA0 -> EXTI0 & PC2 -> EXTI2
     SYSCFG->EXTICR[0] &= ~(SYSCFG_EXTICR1_EXTI0 | SYSCFG_EXTICR1_EXTI2);
-    SYSCFG->EXTICR[0] |=  (SYSCFG_EXTICR1_EXTI0_PA | SYSCFG_EXTICR1_EXTI2_PC);
+    SYSCFG->EXTICR[0] |=  (SYSCFG_EXTICR1_EXTI0_PA | SYSCFG_EXTICR1_EXTI2_PC);      //EXTI0 -> PA & EXTI2 -> PC
 
     //PC2 (SUMA): flanco de subida
     EXTI->RTSR |= EXTI_RTSR_TR2;    //1: Rising trigger enabled (for Event and Interrupt) for input line
@@ -244,9 +289,8 @@ void init_EXTI(void){
     EXTI->FTSR |= EXTI_FTSR_TR0;    //1: Falling trigger enabled (for Event and Interrupt) for input line.
     EXTI->RTSR &= ~EXTI_RTSR_TR0;   //0: Rising trigger disabled (for Event and Interrupt) for input line
 
-    EXTI->PR = EXTI_PR_PR0 | EXTI_PR_PR2; // descartar pendientes anteriores al habilitar
     //Interrupt mask register (EXTI_IMR)
-    EXTI->IMR |= (EXTI_IMR_MR0 | EXTI_IMR_MR2);
+    EXTI->IMR |= (EXTI_IMR_MR0 | EXTI_IMR_MR2);     //1: Interrupt request from line x is not masked
 
     __NVIC_EnableIRQ(EXTI0_IRQn);
     __NVIC_EnableIRQ(EXTI2_IRQn);
@@ -256,15 +300,19 @@ void init_EXTI(void){
 // A=PB12, B=PA12, C=PC11, D=PC12, E=PC10, F=PA11, G=PD2.
 void encender_segmentos(uint8_t digito) {
     static const uint8_t patrones[10] = {
+        //VARIABLE DONDE CADA BIT REPRESENTA UN SEGMENTO DEL DIGITO
         0x3FU, 0x06U, 0x5BU, 0x4FU, 0x66U,
         0x6DU, 0x7DU, 0x07U, 0x7FU, 0x6FU
     };
-    uint8_t patron = (digito < 10U) ? patrones[digito] : 0U;
-    uint32_t puerto_a = 0U;
-    uint32_t puerto_b = 0U;
-    uint32_t puerto_c = 0U;
-    uint32_t puerto_d = 0U;
+    uint8_t patron = (digito < 10U) ? patrones[digito] : 0U;    //CONTIENE UNO DE LOS PATRONES
 
+    uint32_t puerto_a = 0U;     //MÁSCARA PARA GPIOA
+    uint32_t puerto_b = 0U;     //MÁSCARA PARA GPIOB
+    uint32_t puerto_c = 0U;     //MÁSCARA PARA GPIOC
+    uint32_t puerto_d = 0U;     //MÁSCARA PARA GPIOD
+
+
+    //LEER LOS BITS DEL PATRON PARA CONSTRUIR LA MÁSCARA
     if (patron & (1U << 0)) puerto_b |= GPIO_BSRR_BR12; // A
     if (patron & (1U << 1)) puerto_a |= GPIO_BSRR_BR12; // B
     if (patron & (1U << 2)) puerto_c |= GPIO_BSRR_BR11; // C
@@ -273,6 +321,8 @@ void encender_segmentos(uint8_t digito) {
     if (patron & (1U << 5)) puerto_a |= GPIO_BSRR_BR11; // F
     if (patron & (1U << 6)) puerto_d |= GPIO_BSRR_BR2;  // G
 
+
+    //APLICAR LAS MÁSCARAS
     GPIOA->BSRR = puerto_a;
     GPIOB->BSRR = puerto_b;
     GPIOC->BSRR = puerto_c;
@@ -283,8 +333,8 @@ void encender_segmentos(uint8_t digito) {
 
 void apagar_todo(void) {
     /* NPN de selección: nivel bajo apaga los cuatro dígitos. */
-    GPIOB->BSRR = GPIO_BSRR_BR7; // DISP4
-    GPIOC->BSRR = GPIO_BSRR_BR5 | GPIO_BSRR_BR6 | GPIO_BSRR_BR3;
+    GPIOB->BSRR = GPIO_BSRR_BR7;                                    // PB7->DISP4
+    GPIOC->BSRR = GPIO_BSRR_BR5 | GPIO_BSRR_BR6 | GPIO_BSRR_BR3;    // PC5->DISP1, PC6->DISP2 & PC3->DISP3
 
     /* Ánodo común: nivel alto apaga todos los segmentos. */
     GPIOA->BSRR = GPIO_BSRR_BS11 | GPIO_BSRR_BS12;
@@ -294,16 +344,20 @@ void apagar_todo(void) {
 }
 
 void actualizar_display(void) {
-    static uint8_t digito_actual = 0;
-    uint16_t valor = contador;
+    static uint8_t digito_actual = 0;       //0=unidades, 1=decenas, 2=centenas, 3=millares.
+    uint16_t valor = contador;              //Copia local del contador
+
+    //separar el número que toma -valor/contador- en sus cuatro dígitos decimales
     uint8_t unidades = (uint8_t)(valor % 10U);
     uint8_t decenas = (uint8_t)((valor / 10U) % 10U);
     uint8_t centenas = (uint8_t)((valor / 100U) % 10U);
     uint8_t millares = (uint8_t)(valor / 1000U);
+
     uint8_t valor_digito;
 
     apagar_todo();
 
+    //Elegir qué número mostrar según el dígito que toca
     switch (digito_actual) {
         case 0:
             valor_digito = unidades;
@@ -329,7 +383,7 @@ void actualizar_display(void) {
         default: GPIOC->BSRR = GPIO_BSRR_BS5; break; // DISP1, millares
     }
 
-    digito_actual = (uint8_t)((digito_actual + 1U) & 0x03U);
+    digito_actual = (uint8_t)((digito_actual + 1U) & 0x03U);    //DIGITO ACTUAL 0->1->2->3->0->1... CADA 4ms
 }
 
 void EXTI0_IRQHandler(void) {
