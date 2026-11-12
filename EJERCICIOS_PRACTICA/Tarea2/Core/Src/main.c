@@ -85,6 +85,7 @@
 #define CCR_INIT		((ARR_INIT + 1) / 2) //La mitad del periodo: 1000 us de 2000 us -> duty de 50 %
 #define CCR_STEP		10      //Lo que suma o resta al CCR seleccionado en cada paso
 #define BLINK_HALF_PERIOD_MS	125 //PH1 cambia cada 125 ms: periodo de 250 ms -> 4 Hz
+#define BUTTON_DEBOUNCE_MS	20  //Tiempo estable requerido para validar la pulsación y la liberación
 //#define RGB_INDICATOR_MASK	((GPIO_BSRR_BR10) | (GPIO_BSRR_BR11) | (GPIO_BSRR_BR12))
 
 /* ========= MÁQUINA DE ESTADOS FINITOS =========*/
@@ -129,6 +130,9 @@ static uint8_t state_entry_flag = 1;        //Inicia en 1 para que el primer est
 
 volatile uint8_t  button_flag = 0;      //Bandera que deja la ISR del pulsador (volatile: cambia fuera del flujo normal del programa)
 volatile uint8_t  blink_flag  = 0;      //Bandera que deja la ISR del TIM4 (volatile por la misma razoń)
+// TIM4 mantiene el antirebote mientras EXTI0 permanece enmascarada.
+static volatile uint8_t button_debounce_ms = 0;
+static volatile uint8_t button_wait_release = 0;
 static const uint16_t blink_half_period_ms = BLINK_HALF_PERIOD_MS; //Milisegundos entre cambios del LED PH1
 
 static Mode_t edit_mode = MODE_CCR1;   //Modo inicial: editar PC6 / TIM3_CH1
@@ -484,6 +488,50 @@ void TIM4_IRQHandler(void)
 	static uint16_t blink_count = 0; //static: conserva su valor entre interrupciones
 
 	TIM4->SR &= ~TIM_SR_UIF; //Baja la bandera (escribiendo 0) para que la interrupción se pueda repetir
+
+	// Antirebote no bloqueante del pulsador. EXTI0 está enmascarada desde el primer flanco.
+	if (button_debounce_ms > 0)
+	{
+		if (button_wait_release)
+		{
+			// Exige que el botón permanezca liberado durante BUTTON_DEBOUNCE_MS.
+			if ((GPIOB->IDR & GPIO_IDR_ID0) != 0)
+			{
+				button_debounce_ms--;
+			}
+			else
+			{
+				button_debounce_ms = BUTTON_DEBOUNCE_MS;
+			}
+
+			if (button_debounce_ms == 0)
+			{
+				button_wait_release = 0;
+				EXTI->PR = EXTI_PR_PR0; //Descarta cualquier pendiente generado durante el rebote
+				EXTI->IMR |= EXTI_IMR_MR0; //Rearma EXTI0 para la siguiente pulsación
+			}
+		}
+		else
+		{
+			button_debounce_ms--;
+			if (button_debounce_ms == 0)
+			{
+				if ((GPIOB->IDR & GPIO_IDR_ID0) == 0)
+				{
+					button_flag = 1; //Una pulsación validada; la FSM la procesa una sola vez
+					button_wait_release = 1;
+					button_debounce_ms = BUTTON_DEBOUNCE_MS;
+				}
+				else
+				{
+					// El flanco fue un rebote: rearma solo después de comprobar que sigue liberado.
+					button_wait_release = 1;
+					button_debounce_ms = BUTTON_DEBOUNCE_MS;
+				}
+			}
+		}
+	}
+
 	blink_count++;
 	if (blink_count >= blink_half_period_ms)
 	{
@@ -492,9 +540,11 @@ void TIM4_IRQHandler(void)
 	}
 }
 
-//Pulsador por EXTI0
+//Pulsador por EXTI0: confirma la pulsación y la liberación con el tick de 1 ms de TIM4.
 void EXTI0_IRQHandler(void)
 {
 	EXTI->PR = EXTI_PR_PR0; //Se baja escribiendo 1 (en EXTI->PR se limpia con 1, no con 0)
-	button_flag = 1; //La FSM lo convierte en EV_BUTTON_PRESS
+	EXTI->IMR &= ~EXTI_IMR_MR0; //Enmascara nuevos flancos durante el antirebote
+	button_wait_release = 0; //Comienza la validación de la pulsación
+	button_debounce_ms = BUTTON_DEBOUNCE_MS;
 }

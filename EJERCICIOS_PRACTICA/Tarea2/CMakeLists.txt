@@ -20,7 +20,7 @@ enable_language(C CXX ASM)
 
 set(PROJECT_NAME TallerEncoder)
 
-set(CMSIS_ROOT "/home/soquendo/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.0")
+set(CMSIS_ROOT "$ENV{HOME}/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.0")
 
 # Create an executable object type
 add_executable(${PROJECT_NAME})
