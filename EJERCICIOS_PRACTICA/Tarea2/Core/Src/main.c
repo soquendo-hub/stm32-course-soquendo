@@ -22,15 +22,16 @@
  * - CH3 (PWM) -> PC8 (GREEN)
  * - CH4 (PWM) -> PC9 (BLUE)
  * - Indicadores de modo: PC10 (RED), PC12 (GREEN), PC11 (BLUE)
+ * - CH2 (PWM) -> PC7 (DAC)
  *
  ** ENCODER TIM5 - AF02:
  * - CH1 (KY040: CLK) -> PA0
  * - CH2 (KY040: DT)  -> PA1
  *
- ** PULSADOR KY040 (SW), activo en bajo, sin antirrebote:
+ ** PULSADOR KY040 (SW), activo en bajo:
  * - SW -> PB0 (EXTI0)
  *
- ** BLINKY TIM4 -> PH1 (4Hz en modo CCR, 2 Hz en moro ARR)
+ ** BLINKY TIM4 -> PH1 (4Hz en modo CCR, 2 Hz en modo DAC)
  *
  *
  *====================== FUNCIONAMIENTO ===================== *
@@ -39,12 +40,12 @@
  *   Cada paso del encoder sube o baja en una cantidad fija el calor que se esté
  *   editando.
  *
- * -TIM3 genera PWM en PC6 (CH1), PC8 (CH3) y PC9 (CH4). Con PSC = 15 cada tick
+ * -TIM3 genera PWM en PC6 (CH1), PC7 (CH2), PC8 (CH3) y PC9 (CH4). Con PSC = 15 cada tick
  *  dura 1 us: periodo = (ARR + 1) us. Arranca con ARR = 1999 y CCR1/3/4 = 1000:
  *  500 Hz con duty de 50% en las tres salidas.
  *
- * -Hay cuatro modos de edición y cada flanco de bajada del pulsador avanza al siguiente:
- *  MODE_CCR1/3/4: cada paso suma o resta 10 al ancho del pulso seleccionado.
+ * -Hay cinco modos de edición y cada flanco de bajada del pulsador avanza al siguiente:
+ *  MODE_CCR1/2/3/4: cada paso suma o resta 10 al ancho del pulso seleccionado.
  *  MODE_RGB: cada paso suma o resta 10 a los tres anchos de pulso.
  *  Los CCR se limitan a 0..ARR + 1. Los LED indicadores muestran el modo activo.
  *
@@ -86,7 +87,6 @@
 #define CCR_STEP		10      //Lo que suma o resta al CCR seleccionado en cada paso
 #define BLINK_HALF_PERIOD_MS	125 //PH1 cambia cada 125 ms: periodo de 250 ms -> 4 Hz
 #define BUTTON_DEBOUNCE_MS	20  //Tiempo estable requerido para validar la pulsación y la liberación
-//#define RGB_INDICATOR_MASK	((GPIO_BSRR_BR10) | (GPIO_BSRR_BR11) | (GPIO_BSRR_BR12))
 
 /* ========= MÁQUINA DE ESTADOS FINITOS =========*/
 
@@ -99,6 +99,7 @@ typedef enum {      //Lista de modos posibles
     MODE_CCR3,      //El encoder cambia el ancho de pulso de PC8 / TIM3_CH3
     MODE_CCR4,      //El encoder cambia el ancho de pulso de PC9 / TIM3_CH4
     MODE_RGB,       //El encoder cambia por igual los tres anchos de pulso
+	MODE_DAC,		//El encoder cambia el ancho de pulso de PC7 / TIM3_CH2
     NUM_MODES
 } Mode_t;           //Nombre del tipo: edit_mode solo puede recibir valores de este enum
 
@@ -125,7 +126,7 @@ typedef enum {          //Lista de eventos posibles, cada nombre vale un entero 
 
 //Estado actual de la FSM, static: solo se accede desde este módulo (scope mínimo) y solo se modifica en main
 static State_t current_state = STATE_IDLE;  //Siempre iniicia en reposo
-//Bnadera de ENTRY: vale 1 al llegar a un estado para que su acción [ENTER] se ejecute exactamente una vez
+//Bandera de ENTRY: vale 1 al llegar a un estado para que su acción [ENTER] se ejecute exactamente una vez
 static uint8_t state_entry_flag = 1;        //Inicia en 1 para que el primer estado también ejecute su [ENTER]
 
 volatile uint8_t  button_flag = 0;      //Bandera que deja la ISR del pulsador (volatile: cambia fuera del flujo normal del programa)
@@ -138,6 +139,7 @@ static const uint16_t blink_half_period_ms = BLINK_HALF_PERIOD_MS; //Milisegundo
 static Mode_t edit_mode = MODE_CCR1;   //Modo inicial: editar PC6 / TIM3_CH1
 int32_t arr_value = ARR_INIT;           //ARR que tiene el TIM3 (periodo = ARR +  1 ticks de 1 us), con signo para poder comparar con los límites
 int32_t ccr1_value = CCR_INIT;          //Ancho de pulso de PC6, inicia en 50%
+int32_t ccr2_value = CCR_INIT;			//Ancho de pulso de PC7, inicia en 50%
 int32_t ccr3_value = CCR_INIT;          //Ancho de pulso de PC8, inicia en 50%
 int32_t ccr4_value = CCR_INIT;          //Ancho de pulso de PC9, inicia en 50%
 
@@ -147,14 +149,14 @@ int32_t ccr4_value = CCR_INIT;          //Ancho de pulso de PC9, inicia en 50%
 static Event_t get_next_event(void);        //lee (y limpia) las banderas de la ISR y la lectura del encoder, y las convierte en un evento
 static int32_t encoder_TakeSteps(void);     //Devuelve los paso acumulados (con signo) y los descuenta del TIM5
 static void pwm_ApplySteps (int32_t steps); //Ajusta el CCR seleccionado o los tres, con saturación
-static void mode_Toggle(void);              //Avanza entre los cuatro modos
+static void mode_Toggle(void);              //Avanza entre los cinco modos
 static void mode_Indicators_Update(void);   //Actualiza los LED indicadores según el modo activo
 static void led_Toggle(void); //Cambia el estado del LED PH1
 
 //Inicialización del hardware
 static void gpio_Init(void);                //GPIOH PH1 y GPIOC PC10/PC11/PC12 como salidas
 static void tim4_Init(void);                //TIM4 con interrupción cada 1 ms (base de tiempo del blinky)
-static void tim3_pwm_Init(void);            //GPIOC PC6(TIM3_CH1), PC8(TIM3_CH3) Y PC9(TIM3_CH4) en modo PWM 1
+static void tim3_pwm_Init(void);            //GPIOC PC6(TIM3_CH1), PC7(TIM3_CH2), PC8(TIM3_CH3) Y PC9(TIM3_CH4) en modo PWM 1
 static void tim5_encoder_Init(void);        //GPIOA PA0, PA1 + TIM5 en modo encoder
 
 static void exti0_Init(void); //GPIOB PB0 + EXTI0 (flanco de bajada)
@@ -165,7 +167,7 @@ int main(void) //Punto de entrada: el startup lo llama después de copiar .data 
 	Event_t current_event = EV_NONE; //Evento que se evalúa en cada pasada del ciclo infinito
 
 	gpio_Init(); //Configura PH1 (blinky)
-		tim3_pwm_Init(); //Configura las tres salidas PWM de TIM3
+	tim3_pwm_Init(); //Configura las tres salidas PWM de TIM3
 	tim5_encoder_Init(); //Configura el encoder
 	exti0_Init(); //Configura el pulsador por EXTI0 en PB0
 	tim4_Init(); //Último: las interrupciones del blinky empiezan con todo el hardware listo
@@ -236,7 +238,7 @@ int main(void) //Punto de entrada: el startup lo llama después de copiar .data 
 			//[ENTER] Acción de entrada (Moore): cambia de modo, exactamente una vez por cada pulsación
 			if (state_entry_flag) //Solo la primera pasada después de llegar a este estado
 			{
-				mode_Toggle(); //Avanza CCR1 -> CCR3 -> CCR4 -> ajuste RGB
+				mode_Toggle(); //Avanza CCR1 -> CCR3 -> CCR4 -> ajuste RGB -> DAC
 				state_entry_flag = 0; //Baja la bandera: la acción ya se ejecutó
 			}
 			//Transición incondicional: la tarea ya fue atendida, se regresa al reposo
@@ -318,6 +320,9 @@ static void pwm_ApplySteps(int32_t steps)
         ccr3_value += steps * CCR_STEP;
         ccr4_value += steps * CCR_STEP;
         break;
+	case MODE_DAC:
+		ccr2_value += steps * CCR_STEP;
+		break;
     default:
         return;
     }
@@ -330,6 +335,14 @@ static void pwm_ApplySteps(int32_t steps)
     {
         ccr1_value = arr_value + 1;
     }
+	if (ccr2_value < 0)
+	{
+		ccr2_value = 0;
+	}
+	if (ccr2_value > arr_value +1) 
+	{
+		ccr2_value = arr_value +1;
+	}
     if (ccr3_value < 0)
     {
         ccr3_value = 0;
@@ -349,6 +362,7 @@ static void pwm_ApplySteps(int32_t steps)
 
     TIM3->ARR  = (uint32_t) arr_value;  //Con precarga, los cambios aplican al terminar el periodo actual
     TIM3->CCR1 = (uint32_t) ccr1_value;
+	TIM3->CCR2 = (uint32_t) ccr2_value;
     TIM3->CCR3 = (uint32_t) ccr3_value;
     TIM3->CCR4 = (uint32_t) ccr4_value;
 }
@@ -420,28 +434,29 @@ static void tim4_Init(void)
     TIM4->CR1 |= TIM_CR1_CEN;               //Arranca el contador
 }
 
-//PC6/CH1, PC8/CH3 y PC9/CH4 (AF02): PWM modo 1, 500 Hz, duty inicial 50%
+//PC6/CH1, PC7/CH2, PC8/CH3 y PC9/CH4 (AF02): PWM modo 1, 500 Hz, duty inicial 50%
 static void tim3_pwm_Init(void)
 {
     RCC->AHB1ENR |= RCC_AHB1ENR_GPIOCEN;    //RELOJ DEL GPIOC
-    GPIOC->MODER |= (GPIO_MODER_MODER6_1 | GPIO_MODER_MODER8_1 | GPIO_MODER_MODER9_1);
-    GPIOC->AFR[0] |= GPIO_AFRL_AFRL6_1;      //AF2 para PC6 (AFR[0] contiene los pines 0..7)
-    GPIOC->AFR[1] |= (GPIO_AFRH_AFSEL8_1 | GPIO_AFRH_AFSEL9_1); //AF2 para PC8 y PC9
+    GPIOC->MODER |= (GPIO_MODER_MODER6_1 | GPIO_MODER_MODER7_1 | GPIO_MODER_MODER8_1 | GPIO_MODER_MODER9_1);
+    GPIOC->AFR[0] |= (GPIO_AFRL_AFRL6_1  | GPIO_AFRL_AFRL7_1);      //AF2 para PC6 y PC7 (AFR[0] contiene los pines 0..7)
+    GPIOC->AFR[1] |= (GPIO_AFRH_AFSEL8_1 | GPIO_AFRH_AFSEL9_1); 	//AF2 para PC8 y PC9 (AFR[1] contiene los pines 8..)
 
     RCC->APB1ENR |= RCC_APB1ENR_TIM3EN;     //RELOJ DEL TIM3
 
     TIM3->PSC  = 15;            //Tick de 1 us
     TIM3->ARR  = ARR_INIT;      //PERIODO (1999 + 1) us
     TIM3->CCR1 = CCR_INIT;      //Ancho inicial del pulso de PC6: 50%
+	TIM3->CCR2 = CCR_INIT;		//Ancho inicial del pulso de PC7: 50%
     TIM3->CCR3 = CCR_INIT;      //Ancho inicial del pulso de PC8: 50%
     TIM3->CCR4 = CCR_INIT;      //Ancho inicial del pulso de PC9: 50%
     TIM3->CR1 |= TIM_CR1_ARPE;  //ARR CON PRECARGA
 
-    TIM3->CCMR1 |= (TIM_CCMR1_OC1M_1 | TIM_CCMR1_OC1M_2);   //110: PWM MODO 1, ALTO MIENTRAS CNT < CCR1
-    TIM3->CCMR1 |= TIM_CCMR1_OC1PE;     //CCR1 CON PRECARGA
-    TIM3->CCMR2 |= (TIM_CCMR2_OC3M_1 | TIM_CCMR2_OC3M_2 | TIM_CCMR2_OC4M_1 | TIM_CCMR2_OC4M_2);
-    TIM3->CCMR2 |= (TIM_CCMR2_OC3PE | TIM_CCMR2_OC4PE);
-    TIM3->CCER  |= (TIM_CCER_CC1E | TIM_CCER_CC3E | TIM_CCER_CC4E);
+    TIM3->CCMR1 |= (TIM_CCMR1_OC1M_1 | TIM_CCMR1_OC1M_2 | TIM_CCMR1_OC2M_1 | TIM_CCMR1_OC2M_2);     //110: PWM MODO 1, ALTO MIENTRAS CNT < CCR1 PARA CH1 Y CH2
+    TIM3->CCMR1 |= (TIM_CCMR1_OC1PE | TIM_CCMR1_OC2PE);		//CCR1 CON PRECARGA PARA CH1 Y CH2
+    TIM3->CCMR2 |= (TIM_CCMR2_OC3M_1 | TIM_CCMR2_OC3M_2 | TIM_CCMR2_OC4M_1 | TIM_CCMR2_OC4M_2);		//110: PWM MODO 1, ALTO MIENTRAS CNT < CCR1 PARA CH1 Y CH2
+    TIM3->CCMR2 |= (TIM_CCMR2_OC3PE | TIM_CCMR2_OC4PE);		//CCR1 CON PRECARGA PARA CH1 Y CH2
+    TIM3->CCER  |= (TIM_CCER_CC1E | TIM_CCER_CC2E | TIM_CCER_CC3E | TIM_CCER_CC4E);		//enable CH1, CH2, CH3 Y CH4
     
     TIM3->EGR    = TIM_EGR_UG;          //Carga PSC, ARR y CCR1/3/4 a los registros activos
     TIM3->CR1   |= TIM_CR1_CEN;         //ARRANCA EL CONTADOR
