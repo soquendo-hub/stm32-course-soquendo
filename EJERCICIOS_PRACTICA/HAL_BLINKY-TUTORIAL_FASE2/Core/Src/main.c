@@ -4,24 +4,31 @@
  * Autor: Steven Arley Oquendo Rave
  */
 
- #include "stm32f411xe.h"
+ #include "Legacy/stm32_hal_legacy.h"
+#include "stm32f411xe.h"
 #include "stm32f4xx_hal.h"
 #include "stm32f4xx_hal_cortex.h"
 #include "stm32f4xx_hal_flash_ex.h"
 #include "stm32f4xx_hal_gpio.h"
+#include "stm32f4xx_hal_gpio_ex.h"
 #include "stm32f4xx_hal_pwr.h"
 #include "stm32f4xx_hal_rcc.h"
 #include "stm32f4xx_hal_rcc_ex.h"
  #include "stm32f4xx_hal_tim.h"
+#include "stm32f4xx_hal_uart.h"
+#include <stdint.h>
+#include <sys/_intsup.h>
 
  /* Handle ser globlar para que stm32f4xx_it.c pueda accederlo */
- TIM_HandleTypeDef htim4;
+ TIM_HandleTypeDef  htim4;
  UART_HandleTypeDef huart2;
+ volatile uint8_t send_msg_flag = 0;
 
  /* Prototipos de funciones privadas */
  static void SystemClock_Config (void);
  static void gpio_Init(void);
  static void tim4_Init(void);
+ static void usart2_Init(void);
 
  int main(void)
  {
@@ -29,10 +36,17 @@
     SystemClock_Config();  // configura el árbol de reloj: HSI a 16 MHz                
     gpio_Init();           // configura PH1 como salida push-pull                      
     tim4_Init();           // configura TIM4: evento de actualización cada 250 ms
+    usart2_Init();         // configura PA2 para TX y PA3 para RX
 
     while (1)
     {
-      /* lazo de aplicación - la conmutación del LED ocurre en el callback */
+      if (send_msg_flag) 
+      {
+         send_msg_flag = 0;
+         char msg[] = "Hello from STM32\r\n";
+         HAL_UART_Transmit(&huart2, (uint8_t *)msg, sizeof(msg) - 1, 100);
+
+      }
     }
  }
 
@@ -118,6 +132,35 @@ static void SystemClock_Config(void)
    HAL_NVIC_EnableIRQ(TIM4_IRQn);
   }
 
+  static void usart2_Init(void)
+  {
+   GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+   /* Paso 1: habilita los relojes - tanto USART2 como GPIOA */
+   __HAL_RCC_USART2_CLK_ENABLE();
+   __HAL_RCC_GPIOA_CLK_ENABLE();    // ya se llama en gpio_Init() - es seguro llamarla de nuevo
+
+   /* Paso 2: configura PA2 (TX) y PA3 (RX) como función alterna
+      AF7 es USART2 en el STM32F411 - ver la tabla de funciones alterna en el datasheet */
+      GPIO_InitStruct.Pin           = GPIO_PIN_2 | GPIO_PIN_3;
+      GPIO_InitStruct.Mode          = GPIO_MODE_AF_PP;
+      GPIO_InitStruct.Pull          = GPIO_NOPULL;
+      GPIO_InitStruct.Speed         = GPIO_SPEED_FREQ_LOW;
+      GPIO_InitStruct.Alternate     = GPIO_AF7_USART2;
+      HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+   /* Paso3 3: configura USART2 */
+   huart2.Instance                  = USART2;
+   huart2.Init.BaudRate             = 115200;
+   huart2.Init.WordLength           = UART_WORDLENGTH_8B;
+   huart2.Init.StopBits             = UART_STOPBITS_1;
+   huart2.Init.Parity               = UART_PARITY_NONE;
+   huart2.Init.Mode                 = UART_MODE_TX_RX;
+   huart2.Init.HwFlowCtl            = UART_HWCONTROL_NONE;
+   huart2.Init.OverSampling         = UART_OVERSAMPLING_16;
+   HAL_UART_Init(&huart2);
+  }
+
   /* HAL_TIM_PeriodElapsedCallback
    * Llamada automáticamente por HAL_TIM_IRQHandler() cada vez que se dispara
    * un evento de actualización de un temporizador. Compartida por todos los
@@ -128,5 +171,6 @@ static void SystemClock_Config(void)
       if (htim->Instance == TIM4) 
       {
          HAL_GPIO_TogglePin(GPIOH, GPIO_PIN_1);
+         send_msg_flag = 1;
       }
    }
