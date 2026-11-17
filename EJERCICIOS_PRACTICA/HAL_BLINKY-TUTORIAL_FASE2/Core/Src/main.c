@@ -161,7 +161,8 @@ static void SystemClock_Config(void)
    HAL_UART_Init(&huart2);
   }
 
-  /* HAL_TIM_PeriodElapsedCallback
+  /* 
+   * HAL_TIM_PeriodElapsedCallback
    * Llamada automáticamente por HAL_TIM_IRQHandler() cada vez que se dispara
    * un evento de actualización de un temporizador. Compartida por todos los
    * temporizadores - siempre verifica htim->Instance.
