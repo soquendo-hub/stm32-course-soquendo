@@ -2,9 +2,9 @@
  ******************************************************************************
  * @file           : main.c
  * @author         : Steven A. Oquendo Rave
- * @brief          : Encoder KY040 (TIM5) ajusta individualmente CCR1, CCR3, CCR4
- *                   o los tres valores del PWM (TIM3); EXTI0 selecciona el modo,
- *                   organizado como una Máquina de Estados Finitos (FSM) 
+ * @brief          : Encoder KY040 (TIM5) ajusta CCR1, CCR3, CCR4, los tres canales
+ *                   RGB o CH2/DAC del PWM (TIM3); EXTI0 selecciona el modo.
+ *                   El programa está organizado como una Máquina de Estados Finitos (FSM).
  ******************************************************************************
  * @attention
  *
@@ -21,7 +21,8 @@
  * - CH1 (PWM) -> PC6 (RED)
  * - CH3 (PWM) -> PC8 (GREEN)
  * - CH4 (PWM) -> PC9 (BLUE)
- * - Indicadores de modo: PC10 (RED), PC12 (GREEN), PC11 (BLUE)
+ * - Indicadores de modo: PC10 (rojo), PC12 (verde), PC11 (azul).
+ *   CCR1: rojo; CCR3: verde; CCR4: azul; RGB: los tres; DAC: todos apagados intencionalmente.
  * - CH2 (PWM) -> PC7 (DAC)
  *
  ** ENCODER TIM5 - AF02:
@@ -31,7 +32,7 @@
  ** PULSADOR KY040 (SW), activo en bajo:
  * - SW -> PB0 (EXTI0)
  *
- ** BLINKY TIM4 -> PH1 (4Hz en modo CCR, 2 Hz en modo DAC)
+ ** BLINKY TIM4 -> PH1: cambia de estado cada 125 ms y completa un ciclo cada 250 ms (4 Hz).
  *
  ** CAPTURA TIM2 - AF01
  * - CH3 (CAPTURE) -> PB10
@@ -44,16 +45,20 @@
  *   editando.
  *
  * -TIM3 genera PWM en PC6 (CH1), PC7 (CH2), PC8 (CH3) y PC9 (CH4). Con PSC = 15 cada tick
- *  dura 1 us: periodo = (ARR + 1) us. Arranca con ARR = 1999 y CCR1/3/4 = 1000:
- *  500 Hz con duty de 50% en las tres salidas.
+ *  dura 1 us: periodo = (ARR + 1) us. Arranca con ARR = 1999 y los cuatro
+ *  canales (CH1/PC6, CH2/PC7, CH3/PC8 y CH4/PC9) con CCR = 1000: 500 Hz y
+ *  duty de 50 % en cada salida.
  *
  * -Hay cinco modos de edición y cada flanco de bajada del pulsador avanza al siguiente:
- *  MODE_CCR1/2/3/4: cada paso suma o resta 10 al ancho del pulso seleccionado.
- *  MODE_RGB: cada paso suma o resta 10 a los tres anchos de pulso.
- *  Los CCR se limitan a 0..ARR + 1. Los LED indicadores muestran el modo activo.
+ *  Los cinco modos son MODE_CCR1, MODE_CCR3, MODE_CCR4, MODE_RGB y MODE_DAC.
+ *  En CCR1/CCR3/CCR4 cada paso ajusta el canal seleccionado; RGB ajusta por igual
+ *  CH1, CH3 y CH4; DAC ajusta CH2. Cada paso suma o resta 10 al ancho del pulso.
+ *  Los CCR se limitan a 0..ARR + 1. Los indicadores muestran rojo para CCR1,
+ *  verde para CCR3, azul para CCR4, los tres para RGB y todos apagados
+ *  intencionalmente para DAC.
  *
- * -TIM4 es la base de tiempo: interrumpe cada 1 ms y cuenta milisegundos. El LED PH1
- *  parpadea a 4 Hz.
+ * -TIM4 es la base de tiempo: interrumpe cada 1 ms y cuenta milisegundos. PH1 cambia
+ *  de estado cada 125 ms y completa un ciclo cada 250 ms, por lo que parpadea siempre a 4 Hz en todos los modos.
  *
  * -TIM2 captura cada flanco de subida en CCR3. La resta entre capturas consecutivas
  *  deja el periodo en periodo_ticks (ticks de 1 us con el reloj TIM2 actual).
@@ -63,9 +68,11 @@
  *
  *===================== FSM (presentación 05-FSM) ===================== *
  *
- *  patron 1: Switch-Case. La FSM decide qué pasa (política), las funciones
- *  driver hacen el cómo (hardware). Las ISR solo levantas banderas volatile,
- *  get_next_event() las convierte en un evento y el while(1) nunca se bloquea.
+ *  patrón 1: Switch-Case. La FSM decide qué pasa (política), las funciones
+ *  driver hacen el cómo (hardware). TIM2 calcula el período entre capturas; TIM4
+ *  actualiza el antirebote y el conteo del blinky; EXTI0 enmascara su línea e inicia
+ *  el antirebote. La FSM procesa las banderas en el ciclo principal mediante
+ *  get_next_event(), y el while(1) nunca se bloquea.
  *
  *  Estado actual      Evento               Estado siguiente    Acción [ENTER]
  *   -----------------  -------------------  ------------------  --------------------------
@@ -101,22 +108,22 @@
 //  Paso 1 (FSM): mapear el vocabulario a memoria. Estados y eventos son enum (type safety)
 //  y NUM_STATES /NUM_EVENTS son centinelas para validar rangos.
 
-//  MODOS DE EDICIÓN: qué valor del PWM modifica el encoder
+//  MODOS DE EDICIÓN: qué valor del PWM modifica el encoder; NUM_MODES es el centinela, no un modo seleccionable.
 typedef enum {      //Lista de modos posibles
     MODE_CCR1,      //El encoder cambia el ancho de pulso de PC6 / TIM3_CH1
     MODE_CCR3,      //El encoder cambia el ancho de pulso de PC8 / TIM3_CH3
     MODE_CCR4,      //El encoder cambia el ancho de pulso de PC9 / TIM3_CH4
     MODE_RGB,       //El encoder cambia por igual los tres anchos de pulso
 	MODE_DAC,		//El encoder cambia el ancho de pulso de PC7 / TIM3_CH2
-    NUM_MODES
+    NUM_MODES       //Cantidad de modos; se usa para validar el rango y avanzar cíclicamente
 } Mode_t;           //Nombre del tipo: edit_mode solo puede recibir valores de este enum
 
-//ESATDOS: la condición en la que esatá el sistema en un instante dado
+//ESATDOS: la condición en la que está el sistema en un instante dado
 typedef enum {          //Lista de estados posibles, cada nombre vale un entero (0, 1, 2...)
     STATE_IDLE,         //Reposo: espera un evento sin hacer nada más (no bloquea)
-    STATE_UPDATE_PWM,   //Atiende el giro: ajusta el canal CCR o el periodo seleccionado
-    STATE_CHANGE_MODE,  //Atiende el pulsador: avanza entre los cuatro modos
-    STATE_BLINK,       //Atiende el tick del TIM4: cambia el estado del LED PH1
+    STATE_UPDATE_PWM,   //Atiende el giro: ajusta el CCR seleccionado
+    STATE_CHANGE_MODE,  //Atiende el pulsador: avanza entre los cinco modos
+    STATE_BLINK,       	//Atiende el tick del TIM4: cambia el estado del LED PH1
 	STATE_UPDATE_CAPT,  //Atiende una captura pendiente de la señal de entrada
     STATE_ERROR,        //Estado inválido (tranpa de hardware): se recupera hacia STATE_IDLE
     NUM_STATES          //Centinela: cantidad de estados, sirve para validar el rango
@@ -143,10 +150,13 @@ static uint8_t state_entry_flag = 1;        //Inicia en 1 para que el primer est
 volatile uint8_t  button_flag = 0;      //Bandera que deja la ISR del pulsador (volatile: cambia fuera del flujo normal del programa)
 volatile uint8_t  blink_flag  = 0;      //Bandera que deja la ISR del TIM4 (volatile por la misma razoń)
 
+// Período y frecuencia más recientes, publicados por la FSM tras una captura válida.
 volatile uint32_t periodo_ticks;          //Último periodo procesado por la FSM, expresado en ticks (1us)
 volatile uint32_t frecuencia_hz;          //Frecuencia calculada en Hz (resolución de 1 Hz)
+// Período calculado por TIM2; captura_flag notifica a la FSM que hay un dato nuevo.
 static volatile uint32_t captura_pendiente_ticks;
 static volatile uint8_t captura_flag;
+// La primera captura inicializa la referencia; las siguientes se restan para obtener el período.
 static uint32_t captura_anterior;
 static uint8_t captura_previa_valida;
 
@@ -167,10 +177,10 @@ int32_t ccr4_value = CCR_INIT;          //Ancho de pulso de PC9, inicia en 50%
 //Drivers de la FSM (el cómo)
 static Event_t get_next_event(void);        //lee (y limpia) las banderas de la ISR y la lectura del encoder, y las convierte en un evento
 static int32_t encoder_TakeSteps(void);     //Devuelve los paso acumulados (con signo) y los descuenta del TIM5
-static void pwm_ApplySteps (int32_t steps); //Ajusta el CCR seleccionado o los tres, con saturación
+static void pwm_ApplySteps (int32_t steps); //Ajusta CCR1, CCR3, CCR4, CH2/DAC o los tres canales RGB, con saturación
 static void mode_Toggle(void);              //Avanza entre los cinco modos
 static void mode_Indicators_Update(void);   //Actualiza los LED indicadores según el modo activo
-static void led_Toggle(void); //Cambia el estado del LED PH1
+static void led_Toggle(void); 				//Cambia el estado del LED PH1
 
 //Inicialización del hardware
 static void gpio_Init(void);                //GPIOH PH1 y GPIOC PC10/PC11/PC12 como salidas
@@ -182,127 +192,126 @@ static void tim2_capture_Init(void);		//GPIOB PB10 en modo captura
 static void exti0_Init(void); //GPIOB PB0 + EXTI0 (flanco de bajada)
 
 /* ========== Main ========== */
-int main(void) //Punto de entrada: el startup lo llama después de copiar .data y limpiar .bss
+int main(void) 
 {
 	Event_t current_event = EV_NONE; //Evento que se evalúa en cada pasada del ciclo infinito
 
-	gpio_Init(); //Configura PH1 (blinky)
-	tim3_pwm_Init(); //Configura las tres salidas PWM de TIM3
-	tim5_encoder_Init(); //Configura el encoder
-	exti0_Init(); //Configura el pulsador por EXTI0 en PB0
-	tim4_Init(); //Último: las interrupciones del blinky empiezan con todo el hardware listo
+	gpio_Init(); 			//Configura PH1 (blinky)
+	tim3_pwm_Init(); 		//Configura las cuatro salidas PWM de TIM3
+	tim5_encoder_Init(); 	//Configura el encoder
+	exti0_Init(); 			//Configura el pulsador por EXTI0 en PB0
+	tim4_Init(); 			//Último: las interrupciones del blinky empiezan con todo el hardware listo
 	tim2_capture_Init();	//Configura la captura
 
 	/* Patrón 1 (FSM): Switch-Case. El ciclo infinito nunca termina: lee un evento, evalúa el estado y reacciona.
 	 * Regla de NO bloqueo: no hay delay(), cada pasada procesa a lo sumo UN evento y UNA transición. */
 	while (1) //El firmware nunca termina, gira todo el tiempo evaluando eventos
 	{
-		if (current_state == STATE_IDLE) //Solo en reposo se consumen eventos: los otros estados duran una pasada y no usan el evento
+		if (current_state == STATE_IDLE) 		//Solo en reposo se consumen eventos: los otros estados duran una pasada y no usan el evento
 		{
-			current_event = get_next_event(); //Consulta (sin bloquear) si hay un evento pendiente
+			current_event = get_next_event(); 	//Consulta (sin bloquear) si hay un evento pendiente
 		}
-		else //En un estado de atención no se toca ninguna bandera
+		else 									//En un estado de atención no se toca ninguna bandera
 		{
-			current_event = EV_NONE; //Si se consumiera aquí, el evento se perdería sin que nadie lo atienda
+			current_event = EV_NONE; 			//Si se consumiera aquí, el evento se perdería sin que nadie lo atienda
 		}
 
 		//Safeguard: valida estado y evento antes de usarlos, si alguno está fuera de rango se recupera con STATE_ERROR
-		if ((current_state >= NUM_STATES) || (current_event >= NUM_EVENTS)) //Un valor fuera de rango sólo pasa por corrupción de memoria
+		if ((current_state >= NUM_STATES) || (current_event >= NUM_EVENTS)) 
 		{
-			current_state = STATE_ERROR; //Se fuerza el estado de error para recuperarse de forma segura
-			state_entry_flag = 1; //El estado de error también ejecuta su [ENTER]
+			current_state = STATE_ERROR; 		//Se fuerza el estado de error para recuperarse de forma segura
+			state_entry_flag = 1; 				//El estado de error también ejecuta su [ENTER]
 		}
 
-		switch (current_state) //Despacha al código del estado actual
+		switch (current_state) 					//Despacha al código del estado actual
 		{
 
-		case STATE_IDLE: //Estado de reposo
+		case STATE_IDLE: 						//Estado de reposo
 			//[ENTER] Corre una sola vez al llegar al estado (aquí no hay nada que preparar)
-			if (state_entry_flag) //Solo es 1 en la primera pasada después de llegar al estado
+			if (state_entry_flag) 				//Solo es 1 en la primera pasada después de llegar al estado
 			{
-				state_entry_flag = 0; //Se baja para que [ENTER] no vuelva a ejecutarse mientras se siga en este estado
+				state_entry_flag = 0; 			//Se baja para que [ENTER] no vuelva a ejecutarse mientras se siga en este estado
 			}
-
-			//[DO] Corre libremente en cada pasada: en reposo no hace nada, solo espera un evento sin bloquear
 
 			//Transiciones: cada evento lleva a un estado distinto
-			if (current_event == EV_ENCODER_CHANGED) //Se giró el encoder
+			if (current_event == EV_ENCODER_CHANGED) 	//Se giró el encoder
 			{
-				current_state = STATE_UPDATE_PWM; //[EXIT] No hay acción de salida en este estado
-				state_entry_flag = 1; //Se marca para que el estado nuevo ejecute su [ENTER]
+				current_state = STATE_UPDATE_PWM; 		//[EXIT] No hay acción de salida en este estado
+				state_entry_flag = 1; 					//Se marca para que el estado nuevo ejecute su [ENTER]
 			}
-			else if (current_event == EV_BUTTON_PRESS) //Se presionó el pulsador
+			else if (current_event == EV_BUTTON_PRESS) 	//Se presionó el pulsador
 			{
-				current_state = STATE_CHANGE_MODE; //Pasa a atender el cambio de modo
-				state_entry_flag = 1; //Se marca para que el estado nuevo ejecute su [ENTER]
+				current_state = STATE_CHANGE_MODE; 		//Pasa a atender el cambio de modo
+				state_entry_flag = 1; 					//Se marca para que el estado nuevo ejecute su [ENTER]
 			}
-			else if (current_event == EV_BLINKY_TICK) //Venció el medio periodo del blinky
+			else if (current_event == EV_BLINKY_TICK) 	//Venció el medio periodo del blinky
 			{
-				current_state = STATE_BLINK; //Pasa a cambiar el LED
-				state_entry_flag = 1; //Se marca para que el estado nuevo ejecute su [ENTER]
+				current_state = STATE_BLINK; 			//Pasa a cambiar el LED
+				state_entry_flag = 1; 					//Se marca para que el estado nuevo ejecute su [ENTER]
 			}
 			else if (current_event == EV_CAPTURE)
 			{
-				current_state = STATE_UPDATE_CAPT;
-				state_entry_flag = 1;
+				current_state = STATE_UPDATE_CAPT; 		//Pasa a publicar el período y actualizar la frecuencia
+				state_entry_flag = 1; 					//Ejecuta una sola vez la acción de entrada del estado nuevo
 			}
-			break; //Sale del switch, la pasada termina y el while(1) vuelve a empezar
+			break; 										//Sale del switch, la pasada termina y el while(1) vuelve a empezar
 
-		case STATE_UPDATE_PWM: //Estado que atiende el giro del encoder
-			//[ENTER] Acción de entrada (Moore): ajusta el valor seleccionado, una vez por evento del encoder
-			if (state_entry_flag) //Solo la primera pasada después de llegar a este estado
+		case STATE_UPDATE_PWM: 							//Estado que atiende el giro del encoder
+			//[ENTER] Acción de entrada: ajusta el valor seleccionado, una vez por evento del encoder
+			if (state_entry_flag) 						//Solo la primera pasada después de llegar a este estado
 			{
 				pwm_ApplySteps(encoder_TakeSteps()); //Toma los pasos del encoder y los aplica al valor que indica edit_mode
-				state_entry_flag = 0; //Baja la bandera: la acción ya se ejecutó
+				state_entry_flag = 0; 					//Baja la bandera: la acción ya se ejecutó
 			}
 			//Transición incondicional: la tarea ya fue atendida, se regresa al reposo
-			current_state = STATE_IDLE; //Vuelve a esperar eventos
-			state_entry_flag = 1; //IDLE ejecutará su [ENTER]
-			break; //Fin del estado
+			current_state = STATE_IDLE; 				//Vuelve a esperar eventos
+			state_entry_flag = 1; 						//IDLE ejecutará su [ENTER]
+			break; 										//Fin del estado
 
-		case STATE_CHANGE_MODE: //Estado que atiende el pulsador
-			//[ENTER] Acción de entrada (Moore): cambia de modo, exactamente una vez por cada pulsación
-			if (state_entry_flag) //Solo la primera pasada después de llegar a este estado
+		case STATE_CHANGE_MODE: 						//Estado que atiende el pulsador
+			//[ENTER] Acción de entrada: cambia de modo, exactamente una vez por cada pulsación
+			if (state_entry_flag) 						//Solo la primera pasada después de llegar a este estado
 			{
-				mode_Toggle(); //Avanza CCR1 -> CCR3 -> CCR4 -> ajuste RGB -> DAC
-				state_entry_flag = 0; //Baja la bandera: la acción ya se ejecutó
+				mode_Toggle(); 							//Avanza CCR1 -> CCR3 -> CCR4 -> ajuste RGB -> DAC
+				state_entry_flag = 0; 					//Baja la bandera: la acción ya se ejecutó
 			}
 			//Transición incondicional: la tarea ya fue atendida, se regresa al reposo
-			current_state = STATE_IDLE; //Vuelve a esperar eventos
-			state_entry_flag = 1; //IDLE ejecutará su [ENTER]
-			break; //Fin del estado
+			current_state = STATE_IDLE; 				//Vuelve a esperar eventos
+			state_entry_flag = 1; 						//IDLE ejecutará su [ENTER]
+			break; 										//Fin del estado
 
-		case STATE_BLINK: //Estado que atiende el tick del blinky
-			//[ENTER] Acción de entrada (Moore): cambia el LED, exactamente una vez por cada evento del blinky
-			if (state_entry_flag) //Solo la primera pasada después de llegar a este estado
+		case STATE_BLINK: 								//Estado que atiende el tick del blinky
+			//[ENTER] Acción de entrada: cambia el LED, exactamente una vez por cada evento del blinky
+			if (state_entry_flag) 						//Solo la primera pasada después de llegar a este estado
 			{
-				led_Toggle(); //Invierte el estado de PH1
-				state_entry_flag = 0; //Baja la bandera: la acción ya se ejecutó
+				led_Toggle(); 							//Invierte el estado de PH1
+				state_entry_flag = 0; 					//Baja la bandera: la acción ya se ejecutó
 			}
 			//Transición incondicional: la tarea ya fue atendida, se regresa al reposo
-			current_state = STATE_IDLE; //Vuelve a esperar eventos
-			state_entry_flag = 1; //IDLE ejecutará su [ENTER]
-			break; //Fin del estado
+			current_state = STATE_IDLE; 				//Vuelve a esperar eventos
+			state_entry_flag = 1; 						//IDLE ejecutará su [ENTER]
+			break; 										//Fin del estado
 
-		case STATE_UPDATE_CAPT:
-			// La ISR calcula el periodo y deja una bandera; la FSM publica el dato al atenderla.
+		case STATE_UPDATE_CAPT: 						//Atiende el período pendiente de captura
+			// TIM2 calcula el período entre flancos; la FSM lo publica y deriva la frecuencia.
 			if (state_entry_flag)
 			{
-				periodo_ticks = captura_pendiente_ticks;
+				periodo_ticks = captura_pendiente_ticks; //Copia el período que dejó la ISR
 				frecuencia_hz = (periodo_ticks != 0U)
 						? (1000000U / periodo_ticks)
 						: 0U;
-				state_entry_flag = 0;
+				// TIM2 cuenta a 1 MHz; el caso cero evita dividir entre cero.
+				state_entry_flag = 0; 					//Evita repetir la acción de entrada
 			}
-			current_state = STATE_IDLE;
-			state_entry_flag = 1;
+			current_state = STATE_IDLE; 				//La captura ya fue atendida; vuelve a esperar eventos
+			state_entry_flag = 1; 						//Prepara la próxima entrada a IDLE
 			break;
 
-		case STATE_ERROR: //STATE_ERROR comparte código con default porque la recuperación es la misma
-		default: //Trampa (default:): cualquier estado desconocido se recupera de forma segura hacia el reposo
-			current_state = STATE_IDLE; //Reinicia la FSM en un estado conocido
-			state_entry_flag = 1; //IDLE ejecutará su [ENTER]
-			break; //Fin del estado
+		case STATE_ERROR: 								//STATE_ERROR comparte código con default porque la recuperación es la misma
+		default: 										//Trampa (default:): cualquier estado desconocido se recupera de forma segura hacia el reposo
+			current_state = STATE_IDLE; 				//Reinicia la FSM en un estado conocido
+			state_entry_flag = 1; 						//IDLE ejecutará su [ENTER]
+			break; 										//Fin del estado
 		}
 	}
 }
@@ -312,44 +321,47 @@ int main(void) //Punto de entrada: el startup lo llama después de copiar .data 
 
 //Convierte las banderas de las ISR y el encoder en un evento.
 static Event_t get_next_event(void){
-    if (button_flag == 1)   //Si la ISR del pulsador dejó un evento pendiente
+    // Prioridad: botón, encoder, blinky y, por último, captura pendiente.
+    if (button_flag == 1)   						//Si la ISR del pulsador dejó un evento pendiente
     {
-        button_flag = 0;    //bajar bandera
+        button_flag = 0;    						//bajar bandera
         return EV_BUTTON_PRESS;
     }
 
-    int32_t counts = (int32_t) TIM5->CNT;   //Con signo: al girar en CCW desde 0, CNT pasa a 0xFFFFFFFF, que es -1
+    int32_t counts = (int32_t) TIM5->CNT;   		//Con signo: al girar en CCW desde 0, CNT pasa a 0xFFFFFFFF, que es -1
     if ((counts >= COUNTS_PER_STEP) || (counts <= -COUNTS_PER_STEP))    //si hay almenos un paso completo, CW o CCW
     {
         return EV_ENCODER_CHANGED;
     }
 
-    if (blink_flag ==1) //si la ISR del TIM4 dejó un evento pendiente
+    if (blink_flag ==1) 							//si la ISR del TIM4 dejó un evento pendiente
     {
-        blink_flag = 0; //bajar flag
+        blink_flag = 0; 							//bajar flag
         return EV_BLINKY_TICK;
     }
 
+	// La captura se consume tras los eventos de mayor prioridad.
 	if (captura_flag == 1)
 	{
-		captura_flag = 0;
-		return EV_CAPTURE;
+		captura_flag = 0; 							//Consume la notificación para no procesar dos veces el mismo período
+		return EV_CAPTURE; 							//La FSM publicará el período pendiente
 	}
 
-    return EV_NONE;
+    return EV_NONE; 								//No hay evento pendiente ni movimiento completo del encoder
 }
 
 //Devuelve los pasos completos acumulador (+ CW, - CCW) y los descuenta del TIM5
 static int32_t encoder_TakeSteps(void)
 {
     int32_t steps = (int32_t) TIM5->CNT / COUNTS_PER_STEP;  //División entera: 7 cuentas = 1 paso, -7 cuentas = -1 paso
-    TIM5->CNT -= steps * COUNTS_PER_STEP;   //Se descuentan solo las cuentas usadas, el residuo queda para el siguiente giro
+    TIM5->CNT -= steps * COUNTS_PER_STEP;   				//Se descuentan solo las cuentas usadas, el residuo queda para el siguiente giro
     return steps;
 }
 
 //Suma los pasos al CCR seleccionado o por igual a los tres, con saturación
 static void pwm_ApplySteps(int32_t steps)
 {
+    // Ajusta el CCR del modo activo; RGB aplica el mismo cambio a CH1, CH3 y CH4.
     switch (edit_mode)
     {
     case MODE_CCR1:
@@ -366,13 +378,14 @@ static void pwm_ApplySteps(int32_t steps)
         ccr3_value += steps * CCR_STEP;
         ccr4_value += steps * CCR_STEP;
         break;
-	case MODE_DAC:
+	case MODE_DAC: //El modo DAC edita CH2/PC7
 		ccr2_value += steps * CCR_STEP;
 		break;
     default:
         return;
     }
 
+    // Limita cada CCR al intervalo válido de 0 a ARR+1.
     if (ccr1_value < 0)
     {
         ccr1_value = 0;
@@ -406,6 +419,7 @@ static void pwm_ApplySteps(int32_t steps)
         ccr4_value = arr_value + 1;
     }
 
+    // Escribe el período y los cuatro anchos; la precarga aplica los cambios al terminar el período actual.
     TIM3->ARR  = (uint32_t) arr_value;  //Con precarga, los cambios aplican al terminar el periodo actual
     TIM3->CCR1 = (uint32_t) ccr1_value;
 	TIM3->CCR2 = (uint32_t) ccr2_value;
@@ -413,16 +427,17 @@ static void pwm_ApplySteps(int32_t steps)
     TIM3->CCR4 = (uint32_t) ccr4_value;
 }
 
-//Avanza por CCR1, CCR3, CCR4 y el ajuste común RGB
+//Avanza cíclicamente por CCR1, CCR3, CCR4, el ajuste común RGB y DAC.
 static void mode_Toggle(void)
 {
-    edit_mode = (Mode_t) ((edit_mode + 1) % NUM_MODES);
-    mode_Indicators_Update();
+    edit_mode = (Mode_t) ((edit_mode + 1) % NUM_MODES); //Pasa al siguiente modo y vuelve a CCR1 al superar DAC
+    mode_Indicators_Update(); 							//Refleja el nuevo modo en los LED indicadores
 }
 
 //Enciende los indicadores correspondientes al modo activo
 static void mode_Indicators_Update(void)
 {
+    // Primero prepara el patrón apagado; después selecciona los indicadores del modo.
     uint32_t indicators = 0;
 
     switch (edit_mode)
@@ -439,11 +454,11 @@ static void mode_Indicators_Update(void)
     case MODE_RGB:
         indicators = GPIO_BSRR_BS10 | GPIO_BSRR_BS11 | GPIO_BSRR_BS12;
         break;
-    default:
+    default: //MODE_DAC mantiene los tres indicadores apagados
         break;
     }
 
-    GPIOC->BSRR = (GPIO_BSRR_BR10) | (GPIO_BSRR_BR11) | (GPIO_BSRR_BR12) | indicators;
+    GPIOC->BSRR = (GPIO_BSRR_BR10) | (GPIO_BSRR_BR11) | (GPIO_BSRR_BR12) | indicators; //Apaga los tres y activa el patrón elegido en una escritura
 }
 
 //Cambia el estado del LED PH1
@@ -458,12 +473,12 @@ static void led_Toggle(void)
 static void gpio_Init(void)
 {
     RCC->AHB1ENR |= RCC_AHB1ENR_GPIOHEN;    //Señal de reloj del GPIOH
-    GPIOH->MODER |= GPIO_MODER_MODE1_0;     //01: SALIDA
+    GPIOH->MODER |= GPIO_MODER_MODE1_0;     //01: configura PH1 como salida para el LED
 
-    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOCEN;    //Señal de reloj del GPIOC
-    GPIOC->MODER &= ~((GPIO_MODER_MODE10) | (GPIO_MODER_MODE11) | (GPIO_MODER_MODE12));         
-    GPIOC->MODER |= ((GPIO_MODER_MODE10_0) | (GPIO_MODER_MODE11_0) | (GPIO_MODER_MODE12_0));    //PINES PC10, PC11 Y PC12 COMO SALIDA
-    mode_Indicators_Update();
+    RCC->AHB1ENR |= RCC_AHB1ENR_GPIOCEN;    													//Señal de reloj del GPIOC
+    GPIOC->MODER &= ~((GPIO_MODER_MODE10) | (GPIO_MODER_MODE11) | (GPIO_MODER_MODE12)); 		//Limpia el modo previo de los tres pines
+    GPIOC->MODER |= ((GPIO_MODER_MODE10_0) | (GPIO_MODER_MODE11_0) | (GPIO_MODER_MODE12_0)); 	//Configura PC10, PC11 y PC12 como salidas
+    mode_Indicators_Update(); 																	//Muestra el patrón correspondiente al modo inicial CCR1
 }
 
 //Interrupción cada 1 ms: PSC = 15 -> tick de 1 us, ARR = 999 -> 1000 us
@@ -498,13 +513,13 @@ static void tim3_pwm_Init(void)
     TIM3->CCR4 = CCR_INIT;      //Ancho inicial del pulso de PC9: 50%
     TIM3->CR1 |= TIM_CR1_ARPE;  //ARR CON PRECARGA
 
-    TIM3->CCMR1 |= (TIM_CCMR1_OC1M_1 | TIM_CCMR1_OC1M_2 | TIM_CCMR1_OC2M_1 | TIM_CCMR1_OC2M_2);     //110: PWM MODO 1, ALTO MIENTRAS CNT < CCR1 PARA CH1 Y CH2
-    TIM3->CCMR1 |= (TIM_CCMR1_OC1PE | TIM_CCMR1_OC2PE);		//CCR1 CON PRECARGA PARA CH1 Y CH2
-    TIM3->CCMR2 |= (TIM_CCMR2_OC3M_1 | TIM_CCMR2_OC3M_2 | TIM_CCMR2_OC4M_1 | TIM_CCMR2_OC4M_2);		//110: PWM MODO 1, ALTO MIENTRAS CNT < CCR1 PARA CH1 Y CH2
-    TIM3->CCMR2 |= (TIM_CCMR2_OC3PE | TIM_CCMR2_OC4PE);		//CCR1 CON PRECARGA PARA CH1 Y CH2
+    TIM3->CCMR1 |= (TIM_CCMR1_OC1M_1 | TIM_CCMR1_OC1M_2 | TIM_CCMR1_OC2M_1 | TIM_CCMR1_OC2M_2);     //110: PWM modo 1 para CH1 y CH2, salida activa mientras CNT < CCR
+    TIM3->CCMR1 |= (TIM_CCMR1_OC1PE | TIM_CCMR1_OC2PE);		//Habilita precarga de CCR1 y CCR2 para CH1 y CH2
+    TIM3->CCMR2 |= (TIM_CCMR2_OC3M_1 | TIM_CCMR2_OC3M_2 | TIM_CCMR2_OC4M_1 | TIM_CCMR2_OC4M_2);		//110: PWM modo 1 para CH3 y CH4, salida activa mientras CNT < CCR
+    TIM3->CCMR2 |= (TIM_CCMR2_OC3PE | TIM_CCMR2_OC4PE);		//Habilita precarga de CCR3 y CCR4 para CH3 y CH4
     TIM3->CCER  |= (TIM_CCER_CC1E | TIM_CCER_CC2E | TIM_CCER_CC3E | TIM_CCER_CC4E);		//enable CH1, CH2, CH3 Y CH4
     
-    TIM3->EGR    = TIM_EGR_UG;          //Carga PSC, ARR y CCR1/3/4 a los registros activos
+    TIM3->EGR    = TIM_EGR_UG;          //Carga PSC, ARR y CCR1/2/3/4 a los registros activos
     TIM3->CR1   |= TIM_CR1_CEN;         //ARRANCA EL CONTADOR
 }
 
@@ -543,6 +558,7 @@ static void exti0_Init(void)
 
 static void tim2_capture_Init(void)
 {
+	// Habilita GPIOB y configura PB10 con la función alternativa AF1 de TIM2_CH3.
 	RCC->AHB1ENR |= RCC_AHB1ENR_GPIOBEN;
 
 	// PB10: FUNCIÓN ALTERNATIVA AF01 (TIM2_CH3)
@@ -551,29 +567,31 @@ static void tim2_capture_Init(void)
 	GPIOB->AFR[1] &= ~GPIO_AFRH_AFRH2;
 	GPIOB->AFR[1] |= GPIO_AFRH_AFRH2_0;		//0001: AF1
 
+	// Habilita TIM2 y prepara una base de 1 MHz con contador de 32 bits.
 	RCC->APB1ENR |= RCC_APB1ENR_TIM2EN;
 
 	TIM2->CR1 = 0;
 	TIM2->PSC = 15;				//Tick de 1 us
 	TIM2->ARR  = 0xFFFFFFFF;		// TIM2 es de 32 bits
-	TIM2->CNT = 0;
+	TIM2->CNT = 0; //Inicia la cuenta desde cero
 
-	TIM2->CCMR2 &= ~(TIM_CCMR2_CC3S | TIM_CCMR2_IC3PSC | TIM_CCMR2_IC3F);	//CC3S:00: noninverted/rising edge
+	TIM2->CCMR2 &= ~(TIM_CCMR2_CC3S | TIM_CCMR2_IC3PSC | TIM_CCMR2_IC3F);	//Limpia selección de entrada, prescaler y filtro de captura de CH3
 	TIM2->CCMR2 |= TIM_CCMR2_CC3S_0;	//01: CH3 LEE TI3
 
-	TIM2->CCER &= ~(TIM_CCER_CC3P | TIM_CCER_CC3NP | TIM_CCER_CC3E);
+	// Selecciona entrada directa TI3 y flanco ascendente; se dejan filtro y prescaler de captura en cero.
+	TIM2->CCER &= ~(TIM_CCER_CC3P | TIM_CCER_CC3NP | TIM_CCER_CC3E); //Configura polaridad ascendente y deshabilita CH3 mientras se ajusta
 	TIM2->CCER  |= TIM_CCER_CC3E;		//1: Capture enabled
-	TIM2->SR = 0;
-	TIM2->DIER |= TIM_DIER_CC3IE;
-	NVIC_ClearPendingIRQ(TIM2_IRQn);
-	NVIC_EnableIRQ(TIM2_IRQn);
+	TIM2->SR = 0; //Limpia banderas pendientes antes de habilitar la interrupción
+	TIM2->DIER |= TIM_DIER_CC3IE; //Solicita interrupción al capturar en el canal 3
+	NVIC_ClearPendingIRQ(TIM2_IRQn); //Descarta una solicitud antigua en el NVIC
+	NVIC_EnableIRQ(TIM2_IRQn); //Habilita la interrupción de TIM2 en el NVIC
 
-	TIM2->CR1 |= TIM_CR1_CEN;			//1: Counter enabled
+	TIM2->CR1 |= TIM_CR1_CEN;			//Inicia el contador libre que proporciona las marcas de tiempo
 }
 
-/* ======= FUNCIONES ISR (SOLO REGISTRAN EL EVENTO Y REGRESAN, SIN LÓGICA DE LA FSM) ======= */
+/* ======= ISR: atienden el hardware y dejan datos/banderas para la FSM ======= */
 
-//Cada 1 ms cuenta el milisegundo y cada blink_half_period_ms deja la bandera del blinky
+//Cada 1 ms avanza el antirebote y el conteo del blinky; cada 125 ms deja la bandera para la FSM.
 void TIM4_IRQHandler(void)
 {
 	static uint16_t blink_count = 0; //static: conserva su valor entre interrupciones
@@ -588,16 +606,16 @@ void TIM4_IRQHandler(void)
 			// Exige que el botón permanezca liberado durante BUTTON_DEBOUNCE_MS.
 			if ((GPIOB->IDR & GPIO_IDR_ID0) != 0)
 			{
-				button_debounce_ms--;
+				button_debounce_ms--; //Cuenta el tiempo desde el flanco inicial de EXTI0 //Acumula un milisegundo estable de liberación
 			}
 			else
 			{
-				button_debounce_ms = BUTTON_DEBOUNCE_MS;
+				button_debounce_ms = BUTTON_DEBOUNCE_MS; //Reinicia el tiempo si vuelve a estar presionado
 			}
 
 			if (button_debounce_ms == 0)
 			{
-				button_wait_release = 0;
+				button_wait_release = 0; //Terminó la comprobación de que el pulsador quedó liberado
 				EXTI->PR = EXTI_PR_PR0; //Descarta cualquier pendiente generado durante el rebote
 				EXTI->IMR |= EXTI_IMR_MR0; //Rearma EXTI0 para la siguiente pulsación
 			}
@@ -610,14 +628,14 @@ void TIM4_IRQHandler(void)
 				if ((GPIOB->IDR & GPIO_IDR_ID0) == 0)
 				{
 					button_flag = 1; //Una pulsación validada; la FSM la procesa una sola vez
-					button_wait_release = 1;
-					button_debounce_ms = BUTTON_DEBOUNCE_MS;
+					button_wait_release = 1; //Tras validar, espera una liberación estable
+					button_debounce_ms = BUTTON_DEBOUNCE_MS; //Inicia la validación del tiempo de liberación
 				}
 				else
 				{
 					// El flanco fue un rebote: rearma solo después de comprobar que sigue liberado.
-					button_wait_release = 1;
-					button_debounce_ms = BUTTON_DEBOUNCE_MS;
+					button_wait_release = 1; //No hubo pulsación válida; espera liberación para rearmar
+					button_debounce_ms = BUTTON_DEBOUNCE_MS; //Exige que la liberación permanezca estable
 				}
 			}
 		}
@@ -626,8 +644,8 @@ void TIM4_IRQHandler(void)
 	blink_count++;
 	if (blink_count >= blink_half_period_ms)
 	{
-		blink_count = 0;
-		blink_flag = 1; //La FSM lo convierte en EV_BLINK_TICK
+		blink_count = 0; //Reinicia el conteo para el siguiente intervalo de 125 ms
+		blink_flag = 1; //La FSM consume esta bandera y la convierte en EV_BLINKY_TICK
 	}
 }
 
@@ -637,11 +655,13 @@ void EXTI0_IRQHandler(void)
 	EXTI->PR = EXTI_PR_PR0; //Se baja escribiendo 1 (en EXTI->PR se limpia con 1, no con 0)
 	EXTI->IMR &= ~EXTI_IMR_MR0; //Enmascara nuevos flancos durante el antirebote
 	button_wait_release = 0; //Comienza la validación de la pulsación
-	button_debounce_ms = BUTTON_DEBOUNCE_MS;
+	button_debounce_ms = BUTTON_DEBOUNCE_MS; //Inicia la validación medida por TIM4
 }
 
+// Calcula el período entre marcas consecutivas; la primera captura inicializa la referencia.
 void TIM2_IRQHandler(void)
 {
+	// Atiende la captura de CH3; leer CCR3 obtiene la marca temporal capturada.
 	if (TIM2->SR & TIM_SR_CC3IF)
 	{
 		uint32_t captura = TIM2->CCR3; //Lectura CCR3 reconoce la captura pendiente
@@ -650,13 +670,13 @@ void TIM2_IRQHandler(void)
 		{
 			// Aritmética unsigned: la resta también resuelve un desbordamiento del contador.
 			captura_pendiente_ticks = captura - captura_anterior;
-			captura_flag = 1;
+			captura_flag = 1; //Avisa a la FSM que hay un período nuevo disponible
 		}
 		else
 		{
-			captura_previa_valida = 1;
+			captura_previa_valida = 1; //La primera marca establece el punto de referencia
 		}
 
-		captura_anterior = captura;
+		captura_anterior = captura; //Guarda esta marca para calcular el período siguiente
 	}
 }
