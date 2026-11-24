@@ -191,6 +191,7 @@ static void mode_Indicators_Update(void);   //Actualiza los LED indicadores seg�
 static void led_Toggle(void);               //Cambia el estado del LED PH1
 
 //Inicialización del hardware
+static void SystemClock_Config(void);       //Configura HSI a 16 MHz y APB1 sin divisor
 static void gpio_Init(void);                //GPIOH PH1 y GPIOC PC10/PC11/PC12 como salidas
 static void tim4_Init(void);                //TIM4 con interrupción cada 1 ms (base de tiempo del blinky)
 static void tim3_pwm_Init(void);            //GPIOC PC6(TIM3_CH1), PC7(TIM3_CH2), PC8(TIM3_CH3) Y PC9(TIM3_CH4) en modo PWM 1
