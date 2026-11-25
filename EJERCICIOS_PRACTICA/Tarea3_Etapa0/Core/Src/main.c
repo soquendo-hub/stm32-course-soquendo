@@ -1,20 +1,12 @@
 /*
- * main.c
- * Tarea3_Etapa0_Preparación
- * Objetivos:
- * -  Compliar y enlazar el driver HAL UART.
- * -  Construir un archivo de aplicación
- * por etapa para que desde un main.c fijo 
- * se seleccione la aplicación mediante 
- * la variable APP.
- * -  Blinky (TIM4 + PH1) y configuración
- * del reloj viven en COre/common/.
- * -  Hablar con la placa desde una 
- * terminal terminal serial en el PC.
- * Autor: Steven Arley Oquendo Rave
+ * @file    main.c
+ * @author  Steven Arley Oquendo Rave
+ * @brief   Punto de entrada común de las etapas de la tarea UART.
+ *          Inicializa HAL, el reloj y el heartbeat; después delega el
+ *          comportamiento a la aplicación seleccionada por APP en CMake.
+ *          En la etapa de preparación, la aplicación todavía no usa UART.
  */
 
-/* Core/Src/main.c — igual para todas las etapas; no se vuelve a editar */
 #include "stm32f4xx_hal.h"
 #include "system.h"
 #include "heartbeat.h"
@@ -22,13 +14,21 @@
 
 int main(void)
 {
+    /* Inicializa los servicios básicos de HAL, incluido el tick de SysTick. */
     HAL_Init();
+
+    /* Configura HSI y los divisores de los relojes del sistema y los buses. */
     SystemClock_Config();
-    heartbeat_init(250U);   /* cambia de estado cada 250 ms = parpadeo a 2 Hz */
-    app_init();             /* provista por la etapa seleccionada */
+
+    /* Inicia el heartbeat compartido; PH1 cambia cada 250 ms (parpadeo de 2 Hz). */
+    heartbeat_init(250U);
+
+    /* Inicializa una sola vez la aplicación que APP seleccionó en CMake. */
+    app_init();
 
     while (1) {
-        app_loop();         /* provista por la etapa seleccionada */
+        /* Ejecuta continuamente el ciclo de la aplicación seleccionada. */
+        app_loop();
     }
 }
    
