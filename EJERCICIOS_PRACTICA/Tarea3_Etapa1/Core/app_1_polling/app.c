@@ -27,7 +27,7 @@ static void uart2_send_text(const char *text);
     void app_init(void)
 {
     uart2_init();
-    uart2_send_text("\r\nStage 1: polling. Type something.\r\n")
+    uart2_send_text("\r\nStage 1: polling. Type something.\r\n");
 }
 
 /*Se ejecuta en cada ciclo del while loop. Imprime una linea tick
@@ -39,22 +39,24 @@ void app_loop(void)
 {
     static uint32_t last_tick_ms = 0U;      //tiempo del ultimo tick
     static uint32_t tick_count = 0U;        //contador de ticks
-    uint8_t msg[40];                        //
+    uint8_t byte_aux;                       //Byte auxiliar
+    char msg[40];
 
-    /*1. Una vez por segundo, muestra que el while loop está vivo y su ultimo tick*/
+    /* 1. Una vez por segundo, mostrar que el bucle está vivo, y cuándo */
     if ((HAL_GetTick() - last_tick_ms) >= TICK_PERIOD_MS) {
-    last_tick_ms =  HAL_GetTick();
-    tick_count++;
-    (void)sniprintf(msg, sizeof msg, "tick %lu at &lu ms\r\n", 
-                (unsigned long)tick_count, (unsigned long)last_tick_ms);
-    uart2_send_text(msg);
+        last_tick_ms = HAL_GetTick();
+        tick_count++;
+        (void)snprintf(msg, sizeof msg, "tick %lu at %lu ms\r\n",
+                       (unsigned long)tick_count, (unsigned long)last_tick_ms);
+        uart2_send_text(msg);
+    }
 
     /*2. Esperar hasta RX_TIMEOUT_MS por cada byte, y luego describirlo*/
     if (HAL_UART_Receive(&huart2, &byte_aux, 1u, RX_TIMEOUT_MS) == HAL_OK) {
         char shown = ((byte_aux >= 0x20U) && (byte_aux < 0x7FU)) ? (char)byte_aux : '.';
         (void)snprintf(msg, sizeof msg, "rx: '%c' 0x%02X\r\n", shown, byte_aux);
         uart2_send_text(msg);
-    }
+    
     }
 }
 
@@ -62,7 +64,7 @@ void app_loop(void)
     en el mismo orden que heartbeat_init(): relojes, pines, periféricos*/
 static void uart2_init(void)
 {
-    GPIO_InitTypeDef gpio = {0}
+    GPIO_InitTypeDef gpio = {0};
 
     /* 1. Relojes: USART2 (APB1) y GPIOA*/
     __HAL_RCC_USART2_CLK_ENABLE();
@@ -73,7 +75,7 @@ static void uart2_init(void)
     gpio.Mode               = GPIO_MODE_AF_PP;          //FUNCIÓN ALTERNATIVA
     gpio.Pull               = GPIO_PULLUP;              //DESCANSA EN ALTO
     gpio.Speed              = GPIO_SPEED_FREQ_HIGH;     //HIGH SPEED
-    gpio.Alternate          = GPIO_AF7_USART2           //AF7
+    gpio.Alternate          = GPIO_AF7_USART2;           //AF7
     HAL_GPIO_Init(GPIOA, &gpio);
 
     /*3. USART2: 115200 baudios, 8N1, trasmición y recepción, sin control de flujo*/

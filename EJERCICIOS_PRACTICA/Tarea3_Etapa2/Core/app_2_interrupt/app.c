@@ -54,6 +54,19 @@ void app_loop(void)
     static uint32_t reported_errors = 0U;
     uint8_t byte_aux;
     char msg[64];
+    
+    
+    /* PRUEBA
+    static uint32_t last_stall_ms = 0U;
+
+    if ((HAL_GetTick() - last_stall_ms) >= 5000U) {
+        last_stall_ms = HAL_GetTick();
+        __disable_irq(  );
+        for (volatile uint32_t i = 0U; i < 1000000U; i++) {
+        
+        }
+        __enable_irq(   );
+    }*/
 
     /* 1. Entregar cada byte a la línea en vez de imprimirlo */
     while (rx_ring_get(&byte_aux)) 
