@@ -18,7 +18,7 @@ project(Tarea3_Etapa3)
 # Enable CMake support for ASM and C/CPP languages
 enable_language(C CXX ASM)
 
-set(PROJECT_NAME Tarea3_Etapa3s)
+set(PROJECT_NAME Tarea3_Etapa3)
 
 set(CMSIS_ROOT "$ENV{HOME}/STM32Cube/Repository/STM32Cube_FW_F4_V1.28.0")
 
@@ -29,11 +29,13 @@ add_executable(${PROJECT_NAME})
 # Un main.c fijo, varias aplicaciones: APP decide qué app.c se compila.
 # Cada etapa nueva añade su nombre a la lista STRINGS y una línea APP_DIR_<nombre>.
 set(APP "blinky" CACHE STRING "Application to build")
-set_property(CACHE APP PROPERTY STRINGS blinky polling interrupt)
+set_property(CACHE APP PROPERTY STRINGS blinky polling interrupt dma_idle)
 
 set(APP_DIR_blinky    ${CMAKE_SOURCE_DIR}/Core/app_0_blinky)
 set(APP_DIR_polling   ${CMAKE_SOURCE_DIR}/Core/app_1_polling)
 set(APP_DIR_interrupt ${CMAKE_SOURCE_DIR}/Core/app_2_interrupt)
+set(APP_DIR_dma_idle ${CMAKE_SOURCE_DIR}/Core/app_3_dma_idle)
+
 
 
 

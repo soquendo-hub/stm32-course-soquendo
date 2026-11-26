@@ -2,7 +2,7 @@
     "cmake.cmakePath": "cube-cmake",
     "cmake.configureArgs": [
         "-DCMAKE_COMMAND=cube-cmake",
-        "-DAPP=interrupt"
+        "-DAPP=dma_idle"
 
     ],
     "cmake.preferredGenerators": [
