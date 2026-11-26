@@ -13,7 +13,9 @@
 #include "stm32f4xx_hal_uart.h"
 #include "system.h"
 
-#define TX_TIMEOUT_MS 100U      //El mayor tiempo que aceptamos para esperar por una transmisión
+#define TX_TIMEOUT_MS  100U     //El mayor tiempo que aceptamos para esperar por una transmisión
+#define RX_TIMEOUT_MS  10U      //Qué tanto espera app_loop() por un byte
+#define TICK_PERIOD_MS 1000U    //Una linea tick por segundo
 
 static UART_HandleTypeDef huart2;   //static: solo este archivo lo usa
 
@@ -28,10 +30,32 @@ static void uart2_send_text(const char *text);
     uart2_send_text("\r\nStage 1: polling. Type something.\r\n")
 }
 
-/*Se ejecuta en cada ciclo del while loop*/
+/*Se ejecuta en cada ciclo del while loop. Imprime una linea tick
+    cada segundo, mientras tanto espera RX_TIMEOUT_MS (10ms) por cada byte
+    y lo describe. Mientras esté esperando dentro de HAL_UART_Receive()
+    no corre nada más*/
+ 
 void app_loop(void)
 {
-    //punto de control
+    static uint32_t last_tick_ms = 0U;      //tiempo del ultimo tick
+    static uint32_t tick_count = 0U;        //contador de ticks
+    uint8_t msg[40];                        //
+
+    /*1. Una vez por segundo, muestra que el while loop está vivo y su ultimo tick*/
+    if ((HAL_GetTick() - last_tick_ms) >= TICK_PERIOD_MS) {
+    last_tick_ms =  HAL_GetTick();
+    tick_count++;
+    (void)sniprintf(msg, sizeof msg, "tick %lu at &lu ms\r\n", 
+                (unsigned long)tick_count, (unsigned long)last_tick_ms);
+    uart2_send_text(msg);
+
+    /*2. Esperar hasta RX_TIMEOUT_MS por cada byte, y luego describirlo*/
+    if (HAL_UART_Receive(&huart2, &byte_aux, 1u, RX_TIMEOUT_MS) == HAL_OK) {
+        char shown = ((byte_aux >= 0x20U) && (byte_aux < 0x7FU)) ? (char)byte_aux : '.';
+        (void)snprintf(msg, sizeof msg, "rx: '%c' 0x%02X\r\n", shown, byte_aux);
+        uart2_send_text(msg);
+    }
+    }
 }
 
 /*Configurar USART2: 115200, 8N1 on PA2/PA3, 
