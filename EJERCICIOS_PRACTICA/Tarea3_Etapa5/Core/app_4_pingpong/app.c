@@ -97,7 +97,8 @@ void app_loop(void)
         __disable_irq();
         rx_block[read_index].ready = false;       // ready = false -> disponible para DMA
         restart_aux = rx_paused;
-        rx_paused = false;                      
+        rx_paused = false;   
+        __enable_irq();                          // reactivar UART, DMA y heartbeat al terminar la sección crítica                   
 
         if (restart_aux) {
             rx_dma_index = read_index;            // el DMA esperaba que este bloque quedara libre
