@@ -7,9 +7,9 @@
 #define PWM_TICK_HZ       1000000U      // hacer que el contador avance a 1 MHz: 1 tick equivale a 1 us
 #define PWM_PERIOD_TICKS  1000U         // contar 1000 ticks produce 1 ms de periodo, es decir 1 kHz
 
-static TIM_HandleTypeDef htim_pwm;      // HAL usa este handle para configurar TIM3 y su canal PWM
-static bool pwm_started = false;       // evita escribir el comparador antes de iniciar el PWM
-static uint32_t pwm_duty = 0U;          // último porcentaje aplicado correctamente
+static TIM_HandleTypeDef htim_pwm;      // manejador para configurar TIM3 y su canal PWM
+static bool pwm_started = false;       
+static uint32_t pwm_duty = 0U;          // último porcentaje
 
 /* calcula el reloj real del timer considerando el divisor configurado en APB1 */
 static uint32_t pwm_timer_clock_hz(void);
@@ -20,37 +20,37 @@ el mismo orden que todo periférico: relojes, pin, temporizador, canal, inicio
 */
 void pwm_init(void)
 {
-    GPIO_InitTypeDef gpio = {0};         // ajustes de PC6 para conectarlo a TIM3_CH1
-    TIM_OC_InitTypeDef channel = {0};    // ajustes del modo PWM y del valor inicial del canal
+    GPIO_InitTypeDef gpio = {0};         
+    TIM_OC_InitTypeDef channel = {0};    
 
-    /* 1. encender los relojes: GPIOC para PC6 y TIM3 para generar la señal */
+    /* 1. Señal de reloj para PC6 y TIM3 */
     __HAL_RCC_GPIOC_CLK_ENABLE();
     __HAL_RCC_TIM3_CLK_ENABLE();
 
-    /* 2. conectar PC6 a la función alternativa 2, que en este pin es TIM3_CH1 */
-    gpio.Pin       = GPIO_PIN_6;            // seleccionar el pin 6 del puerto C
-    gpio.Mode      = GPIO_MODE_AF_PP;       // el pin entrega la señal del periférico en modo push-pull
-    gpio.Pull      = GPIO_NOPULL;           // no añadir resistencias pull-up ni pull-down internas
-    gpio.Speed     = GPIO_SPEED_FREQ_LOW;   // la velocidad baja es suficiente para una señal PWM de 1 kHz
-    gpio.Alternate = GPIO_AF2_TIM3;         // conectar el pin con la función alternativa de TIM3
+    /* 2.  PC6 AF02 -> TIM3_CH1 */
+    gpio.Pin       = GPIO_PIN_6;            // PC6
+    gpio.Mode      = GPIO_MODE_AF_PP;       // función alternativa - pushpull
+    gpio.Pull      = GPIO_NOPULL;           // sin pull up-down
+    gpio.Speed     = GPIO_SPEED_FREQ_LOW;   // baja velocidad
+    gpio.Alternate = GPIO_AF2_TIM3;         // AF02 -> TIM3_CH1
     HAL_GPIO_Init(GPIOC, &gpio);
 
     /* 3. base de tiempo: contar a 1 MHz hasta 999, así un periodo dura 1 ms */
-    htim_pwm.Instance               = TIM3; // elegir TIM3 como fuente de la señal periódica
-    htim_pwm.Init.Prescaler         = (pwm_timer_clock_hz() / PWM_TICK_HZ) - 1U; // dividir el timer hasta 1 MHz
-    htim_pwm.Init.CounterMode       = TIM_COUNTERMODE_UP; // contar desde cero hacia arriba
-    htim_pwm.Init.Period            = PWM_PERIOD_TICKS - 1U; // contar de 0 a 999: 1000 ticks por periodo
-    htim_pwm.Init.ClockDivision     = TIM_CLOCKDIVISION_DIV1; // no dividir adicionalmente el reloj del timer
-    htim_pwm.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE; // aplicar el periodo nuevo al actualizar
+    htim_pwm.Instance               = TIM3; // TIM3
+    htim_pwm.Init.Prescaler         = (pwm_timer_clock_hz() / PWM_TICK_HZ) - 1U; // dividir el timer a 1 MHz
+    htim_pwm.Init.CounterMode       = TIM_COUNTERMODE_UP; // conteo ascendente
+    htim_pwm.Init.Period            = PWM_PERIOD_TICKS - 1U; // 1000 ticks por periodo
+    htim_pwm.Init.ClockDivision     = TIM_CLOCKDIVISION_DIV1; // sin división 
+    htim_pwm.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE; // precarga activada
     if (HAL_TIM_PWM_Init(&htim_pwm) != HAL_OK) {
         Error_Handler();
     }
 
     /* 4. en PWM1 la salida está activa mientras CNT sea menor que el valor Pulse */
-    channel.OCMode     = TIM_OCMODE_PWM1;       // seleccionar el modo PWM 1 del canal
-    channel.Pulse      = 0U;                    // empezar en 0 %: el LED queda apagado
-    channel.OCPolarity = TIM_OCPOLARITY_HIGH;   // la parte activa del pulso sale en nivel alto
-    channel.OCFastMode = TIM_OCFAST_DISABLE;    // no usar el modo rápido de comparación
+    channel.OCMode     = TIM_OCMODE_PWM1;       // modo PWM 1
+    channel.Pulse      = 0U;                    // empezar en 0 %
+    channel.OCPolarity = TIM_OCPOLARITY_HIGH;   // activo en nivel alto
+    channel.OCFastMode = TIM_OCFAST_DISABLE;    
     if (HAL_TIM_PWM_ConfigChannel(&htim_pwm, &channel, TIM_CHANNEL_1) != HAL_OK) {
         Error_Handler();
     }

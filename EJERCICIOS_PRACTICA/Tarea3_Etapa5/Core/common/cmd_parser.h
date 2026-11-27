@@ -15,16 +15,16 @@ typedef enum
     CMD_INFO,       // muestra uptime y blinky
     CMD_BLINK,      // cambia el periodo del LED heartbeat
     CMD_ECHO,       // devuelve el texto recibido
-    CMD_PWM,        // cambia el ciclo de trabajo de la salida PWM
-    CMD_UNKNOWN     // se usa si la primera palabra no está en cmd_table
+    CMD_PWM,        // cambia el porcentaje de PWM
+    CMD_UNKNOWN     // comando desconocido
 }cmd_id_t;
 
 /* resultado del análisis de una línea. Los punteros apuntan dentro de line[] */
 typedef struct
 {
     cmd_id_t    id;                 // identificador obtenido al buscar el nombre en la tabla
-    const char *name;               // primera palabra escrita por el usuario
-    uint8_t     argc;               // cantidad de argumentos que siguen al nombre
+    const char *name;               // comando
+    uint8_t     argc;               // cantidad de argumentos que siguen el comando
     const char *argv[CMD_MAX_ARGS]; // punteros a cada argumento
     bool        too_many_args;      // = true si había más argumentos que los que caben en argv
 } cmd_t;

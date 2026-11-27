@@ -80,9 +80,9 @@ se detiene antes si reply se llena; el texto siempre termina en '\0'
 */
 static void cmd_echo(const cmd_t *cmd, char *reply, size_t size)
 {
-    size_t used = 0U;                      /* caracteres que ya están escritos en reply */
+    size_t used = 0U;                     
 
-    reply[0] = '\0';                       /* empezar con una cadena vacía */
+    reply[0] = '\0';                      
     for (uint8_t i = 0U; i < cmd->argc; i++) {
         /* en el primer lugar libre, agregar la palabra y un espacio si no es la primera */
         int written = snprintf(&reply[used], size - used, "%s%s",
@@ -94,15 +94,15 @@ negativo = error; igual o mayor que el espacio que queda = cortado: parar aquí
         if ((written < 0) || ((size_t)written >= (size - used))) {
             break;
         }
-        used += (size_t)written;           /* la siguiente palabra va justo después de esta */
+        used += (size_t)written;           
     }
 }
 
 /* "pwm <percent>": valida el porcentaje y pide al módulo pwm que ajuste TIM3 */
 static void cmd_pwm(const cmd_t *cmd, char *reply, size_t size)
 {
-    char *end = NULL;                       // permite saber si strtol convirtió todo el argumento
-    long percent;                           // usar tipo con signo para validar antes del cast
+    char *end = NULL;                       
+    long percent;                         
 
     if (cmd->argc != 1U) {
         (void)snprintf(reply, size, "usage: pwm <0..100>");

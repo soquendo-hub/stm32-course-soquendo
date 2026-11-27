@@ -5,13 +5,13 @@
 #include "stm32f4xx_hal_gpio.h"
 #include "system.h"
 
-#define HB_TIM       TIM4           /* temporizador que produce el evento periódico */
-#define HB_TICK_HZ   10000U         /* a 10 kHz, cada tick del contador dura 0,1 ms */
-#define HB_LED_PORT  GPIOH          /* puerto del LED usado como señal de vida */
-#define HB_LED_PIN   GPIO_PIN_1     /* pH1: pin que cambia de estado en cada evento */
+#define HB_TIM       TIM4           
+#define HB_TICK_HZ   10000U         
+#define HB_LED_PORT  GPIOH          
+#define HB_LED_PIN   GPIO_PIN_1     
 
-static TIM_HandleTypeDef htim_hb;  /* handle de HAL; solo lo usa este módulo */
-static volatile uint32_t hb_period_ms; /* periodo actual, compartido con el callback de comandos */
+static TIM_HandleTypeDef htim_hb;  
+static volatile uint32_t hb_period_ms; 
 
 /* TIM4 está en APB1: su reloj es PCLK1, o 2 x PCLK1 cuando el prescaler de APB1 no es 1 */
 static uint32_t hb_timer_clock_hz(void)
@@ -33,20 +33,20 @@ void heartbeat_init(uint32_t toggle_ms)
     __HAL_RCC_TIM4_CLK_ENABLE();
 
     /* 2. configurar PH1 como salida digital para poder cambiar su nivel */
-    gpio.Pin   = HB_LED_PIN;                 // elegir PH1
-    gpio.Mode  = GPIO_MODE_OUTPUT_PP;        // usar el pin como salida push-pull
-    gpio.Pull  = GPIO_NOPULL;                // no activar resistencias internas
-    gpio.Speed = GPIO_SPEED_FREQ_LOW;        // no hace falta una transición rápida para el LED
+    gpio.Pin   = HB_LED_PIN;                 // PH1
+    gpio.Mode  = GPIO_MODE_OUTPUT_PP;        // salida push-pull
+    gpio.Pull  = GPIO_NOPULL;                // no pull up-down
+    gpio.Speed = GPIO_SPEED_FREQ_LOW;        // baja velocidad
     HAL_GPIO_Init(HB_LED_PORT, &gpio);
 
     /* 3. convertir el periodo pedido a valores de prescaler y auto-reload */
     hb_period_ms = toggle_ms;              // guardar el periodo para que info/blink puedan consultarlo
     htim_hb.Instance               = HB_TIM; // elegir TIM4 como temporizador del heartbeat
-    htim_hb.Init.Prescaler         = (hb_timer_clock_hz() / HB_TICK_HZ) - 1U; // llevar el contador a 10 kHz
-    htim_hb.Init.CounterMode       = TIM_COUNTERMODE_UP; // cNT aumenta desde cero hasta Period
-    htim_hb.Init.Period            = (toggle_ms * (HB_TICK_HZ / 1000U)) - 1U; // cantidad de ticks del periodo solicitado
-    htim_hb.Init.ClockDivision     = TIM_CLOCKDIVISION_DIV1; // no dividir el reloj de muestreo del timer
-    htim_hb.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE; // cargar el nuevo periodo en la actualización
+    htim_hb.Init.Prescaler         = (hb_timer_clock_hz() / HB_TICK_HZ) - 1U; // 10 kHz
+    htim_hb.Init.CounterMode       = TIM_COUNTERMODE_UP; // conteo ascendente
+    htim_hb.Init.Period            = (toggle_ms * (HB_TICK_HZ / 1000U)) - 1U; // periodo en ms
+    htim_hb.Init.ClockDivision     = TIM_CLOCKDIVISION_DIV1; // sin división
+    htim_hb.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE; // activar precarga
     if (HAL_TIM_Base_Init(&htim_hb) != HAL_OK) {
         Error_Handler();
     }
@@ -63,7 +63,7 @@ bool heartbeat_set_period(uint32_t toggle_ms)
 {
     /* rechazar periodos que hagan demasiado rápido o imperceptible el heartbeat */
     if ((toggle_ms < HEARTBEAT_MIN_MS) || (toggle_ms > HEARTBEAT_MAX_MS)) {
-        return false;                  /* rechazar: el heartbeat debe seguir siendo visible */
+        return false;                  
     }
     hb_period_ms = toggle_ms;             // actualizar el valor que devuelve heartbeat_get_period()
     __HAL_TIM_SET_AUTORELOAD(&htim_hb, (toggle_ms * (HB_TICK_HZ / 1000U)) - 1U); // cambiar el periodo del timer
